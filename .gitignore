@@ -1,5 +1,7 @@
 
 D3DShot/
+D3DShot/**
+D3DShot/*
 ultralytics/
 out/**
 spleeter_test/**
@@ -10,3 +12,5 @@ test-imgs/**
 __pycache__/**
 tmp/**
 best.pt
+1.ipynb
+2.ipynb
