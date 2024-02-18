@@ -1,0 +1,11 @@
+
+ultralytics/**
+D3DShot/**
+out/**
+spleeter_test/**
+spes_artifacts/**
+pretrained_models/**
+test-imgs/**
+.vscode/**
+__pycache__/**
+tmp/**
