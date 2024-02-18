@@ -1,0 +1,43 @@
+cog:
+  ingredients:
+    iron-plate: 2
+  query: gear
+  ru-key: шестерня
+  tooltip-caption: Iron gear wheel
+copper-cable:
+  ingredients:
+    copper-plate: 1
+  query: copper
+  ru-key: медный провод
+  tooltip-caption: Copper cable
+copper-plate:
+  ingredients: null
+  query: null
+  ru-key: медная плита
+  tooltip-caption: Copper plate
+electronic-circuit:
+  ingredients:
+    copper-cable: 3
+    iron-plate: 1
+  query: electronic
+  ru-key: зелёный схема
+  tooltip-caption: Electronic circuit
+iron-plate:
+  ingredients: null
+  query: null
+  ru-key: железная плита
+  tooltip-caption: Iron plate
+pipe:
+  ingredients:
+    iron-plate: 1
+  query: pipe
+  ru-key: труба
+  tooltip-caption: Pipe
+steam-engine:
+  ingredients:
+    cog: 8
+    iron-plate: 10
+    pipe: 5
+  query: steam
+  ru-key: паровой двигатель
+  tooltip-caption: Steam engine
