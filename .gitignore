@@ -9,3 +9,4 @@ test-imgs/**
 .vscode/**
 __pycache__/**
 tmp/**
+best.pt
