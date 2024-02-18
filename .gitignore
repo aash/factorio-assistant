@@ -1,6 +1,6 @@
 
-ultralytics/**
-D3DShot/**
+D3DShot/
+ultralytics/
 out/**
 spleeter_test/**
 spes_artifacts/**
