@@ -19,7 +19,7 @@ import scipy.signal as sg
 from spleeter.separator import Separator
 
 
-MODEL_PATH = '../best.pt'
+MODEL_PATH = 'best.pt'
 HOPS_DEFAULT_ADDRESS = 'tcp://0.0.0.0:3002'
 
 ctx = zmq.Context()
