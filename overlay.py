@@ -138,31 +138,6 @@ def get_bounding_rect(in1, in2):
     r = cv.boundingRect(closest_contour)
     return r, closest_contour, c_composite, out
 
-def convertQImageToMat(img: QImage, dims=3) -> np.ndarray: 
-    '''  Converts a QImage into an opencv MAT format  '''
-    img = img.convertToFormat(QImage.Format.Format_RGB32)
-    # if dims == 4:
-    #     img = img.convertToFormat(QtGui.QImage.Format.Format_RGB32)
-    # elif dims == 3:
-    #     img = img.convertToFormat(QtGui.QImage.Format.Format_RGB888)
-    # else:
-    #     raise RuntimeError('invalid image format, only 3,4 channels supported')
-    w, h = img.width(), img.height()
-    ptr = img.bits()
-    # img.sizeInBytes
-    ptr.setsize(img.sizeInBytes())
-    arr = np.array(ptr).reshape(h, w, 4)
-    if dims == 4:
-        return arr
-    elif dims == 3:
-        arr_out = np.zeros((*arr.shape[:2], 3), np.uint8)
-        arr_out[:,:,0] = arr[:,:,0]
-        arr_out[:,:,1] = arr[:,:,1]
-        arr_out[:,:,2] = arr[:,:,2]
-        return arr_out
-    else:
-        raise RuntimeError(f'unsupported color channel dimension: {dims}')
-
 
 def pi_clip(angle):
     if angle > 0:
@@ -482,15 +457,14 @@ class MainWindow(QMainWindow):
 
     def update(self):
         # self.get_screenshot()
-        screenshot = self.screen.grabWindow(self.hwnd)
-        print(self.hwnd)
+        r = self.client_rect
+        screenshot = self.screen.grabWindow(0, r[0] , r[1], r[2], r[3])
         s = screenshot.copy()
         s = s.scaled(self.view_width, self.view_height)
-        self.lbl.setPixmap(s)
+        # self.lbl.setPixmap(s)
         #print('update', self.view_width, self.view_height)
         self.timer_timeout_cnt += 1
         self.dims = (screenshot.width(), screenshot.height())
-        return
 
 
         #qimg = screenshot.copy(QRect(400, 225, 800, 450))
@@ -538,10 +512,10 @@ class MainWindow(QMainWindow):
         if self.brect:
             cv.rectangle(im, self.brect, (255, 0, 0), 3)
 
-        height, width, c = np.shape(im)
-        bytesPerLine = 3 * width
-        qImg = QImage(im.data, width, height, bytesPerLine, QImage.Format_RGB888)
-        self.lbl.setPixmap(QPixmap(qImg).scaled(self.view_width, self.view_height))
+        # height, width, c = np.shape(im)
+        # bytesPerLine = 3 * width
+        # qImg = QImage(im.data, width, height, bytesPerLine, QImage.Format.Format_RGB32)
+        # self.lbl.setPixmap(QPixmap(qImg).scaled(self.view_width, self.view_height))
 
         if not self.worker_busy and (self.state in self.state_handlers):
             w, r, e, f = self.state_handlers[self.state]
@@ -913,70 +887,78 @@ class Worker(QRunnable):
 
 
 
-def get_hwnd(flt):
+# def get_hwnd(flt):
 
-    def enum_cb(hwnd, results):
-        winlist.append((hwnd, win32gui.GetWindowText(hwnd)))
+#     def enum_cb(hwnd, results):
+#         winlist.append((hwnd, win32gui.GetWindowText(hwnd)))
 
-    toplist, winlist = [], []
-    win32gui.EnumWindows(enum_cb, toplist)
+#     toplist, winlist = [], []
+#     win32gui.EnumWindows(enum_cb, toplist)
 
-    for hwnd, title in winlist:
-        if flt.lower() in title.lower():
-            return hwnd
-
-
-def get_dpi():
-    PROCESS_PER_MONITOR_DPI_AWARE = 2
-    MDT_EFFECTIVE_DPI = 0
-    shcore = ctypes.windll.shcore
-    monitors = win32api.EnumDisplayMonitors()
-    hresult = shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-    assert hresult == 0
-    dpiX = ctypes.c_uint()
-    dpiY = ctypes.c_uint()
-    dpi = {}
-    for i, monitor in enumerate(monitors):
-        shcore.GetDpiForMonitor(
-            monitor[0].handle,
-            MDT_EFFECTIVE_DPI,
-            ctypes.byref(dpiX),
-            ctypes.byref(dpiY)
-        )
-        dpi[monitor[0].handle] = (dpiX.value, dpiY.value)
-    return dpi    
+#     for hwnd, title in winlist:
+#         if flt.lower() in title.lower():
+#             return hwnd
 
 
-def dpi_to_scale_ratio(dpi):
-    STANDARD_DPI = 96
-    if len(dpi) != 2 or dpi[0] != dpi[1]:
-        raise RuntimeError(f'non conformant DPI:{dpi[0]}x{dpi[1]}')
-    return dpi[0] / STANDARD_DPI
+# def get_dpi():
+#     PROCESS_PER_MONITOR_DPI_AWARE = 2
+#     MDT_EFFECTIVE_DPI = 0
+#     shcore = ctypes.windll.shcore
+#     monitors = win32api.EnumDisplayMonitors()
+#     hresult = shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+#     assert hresult == 0
+#     dpiX = ctypes.c_uint()
+#     dpiY = ctypes.c_uint()
+#     dpi = {}
+#     for i, monitor in enumerate(monitors):
+#         shcore.GetDpiForMonitor(
+#             monitor[0].handle,
+#             MDT_EFFECTIVE_DPI,
+#             ctypes.byref(dpiX),
+#             ctypes.byref(dpiY)
+#         )
+#         dpi[monitor[0].handle] = (dpiX.value, dpiY.value)
+#     return dpi    
+
+
+# def dpi_to_scale_ratio(dpi):
+#     STANDARD_DPI = 96
+#     if len(dpi) != 2 or dpi[0] != dpi[1]:
+#         raise RuntimeError(f'non conformant DPI:{dpi[0]}x{dpi[1]}')
+#     return dpi[0] / STANDARD_DPI
 
 
 if __name__ == '__main__':
     ahk = ahk.AHK()
     w = ahk.find_window(title='Factorio')
-    print(w.title)
+    hwnd = int(w.id, 16)
+    w.move(x=0, y=0)
+    c = win32gui.ClientToScreen(hwnd, (0,0))
     res1 = {'width': 1920, 'height': 1080}
     res2 = {'width': 1440, 'height': 810}
-    w.move(0, 0, **res1)
+    w.move(x=0, y=0, **res2)
     w.activate()
 
-    hwnd = get_hwnd(flt='factorio')
     # PROCESS_PER_MONITOR_DPI_AWARE = 2
     # MDT_EFFECTIVE_DPI = 0
     # shcore = ctypes.windll.shcore
     # hresult = shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-    r = win32gui.GetWindowRect(hwnd)
+    # r = win32gui.GetWindowRect(hwnd)
     rc = win32gui.GetClientRect(hwnd)
-    c = win32gui.ClientToScreen(hwnd, (0,0))
-    app = QApplication(sys.argv)
+    print(rc, c)
     r = (c[0], c[1], rc[2], rc[3])
-    print(r)
+    app = QApplication(sys.argv)
+
+    # r = (c[0], c[1], rc[2], rc[3])
+    # print(r)
+    # w = ahk.find_window()
     mywindow = MainWindow(r, hwnd)
-    p = w.get_position()
-    print(p)
+    # print(mywindow.screen.devicePixelRatio())
+
+    #p = w.get_position()
+    #print(p)
     mywindow.move(r[0] + r[2], r[0])
+    #mywindow.setGeometry()
     mywindow.show()
     app.exec()
+
