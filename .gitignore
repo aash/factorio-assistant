@@ -9,8 +9,9 @@ spes_artifacts/**
 pretrained_models/**
 test-imgs/**
 .vscode/**
-__pycache__/**
+__pycache__
 tmp/**
 best.pt
 1.ipynb
 2.ipynb
+logs/**
