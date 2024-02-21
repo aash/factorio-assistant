@@ -28,6 +28,8 @@ from re import match
 # from lib.net_tools import load_ckpt
 from collections import OrderedDict
 
+from cvutils import convertQImageToMat, convertMatToQImage
+
 # if feat_yolo:
 #     from ultralytics import YOLO
 
@@ -276,21 +278,21 @@ class MainWindow(QMainWindow):
                 ZmqClientTransport.create(ctx, SPES_API_SERVICE_ADDRESS)
             )
             spes_api_endpoint = rpc_client.get_proxy()
-            # while True:
-            #     if self.closed:
-            #         break
-            #     msgs = spes_api_endpoint.get_messages()
-            #     for m in msgs:
-            #         pass
-            #         #self.signals.onAudioCommand.emit(m)
-            #     #sleep(0.1)
+            while True:
+                if self.closed:
+                    break
+                msgs = spes_api_endpoint.get_messages()
+                for m in msgs:
+                    print(m)
+                    self.signals.onAudioCommand.emit(m)
+                sleep(0.3)
 
-        # self.command_processor = Worker(_route_audio_command)
-        # self.command_processor.signals.result.connect(lambda x: None)
-        # self.command_processor.signals.error.connect(lambda x: None)
-        # self.command_processor.signals.finished.connect(lambda : None)
-        # self.signals.onAudioCommand.connect(self.processAudioCommand)
-        #self.threadpool.start(self.command_processor)
+        self.command_processor = Worker(_route_audio_command)
+        self.command_processor.signals.result.connect(lambda x: None)
+        self.command_processor.signals.error.connect(lambda x: None)
+        self.command_processor.signals.finished.connect(lambda : None)
+        self.signals.onAudioCommand.connect(self.processAudioCommand)
+        self.threadpool.start(self.command_processor)
 
 
         self.cmd = None
@@ -483,6 +485,7 @@ class MainWindow(QMainWindow):
         im_small = cv.resize(im, (0,0), fx=resize_factor, fy=resize_factor)
         _, im_enc = cv.imencode('.png', im_small)
         im_str = pybase64.b64encode_as_string(im_enc.tobytes())
+
         results = self.hops_api_endpoint.parse_screenshot(im_str)
         for r in results:
             r = tuple(map(int, (np.array(r) / resize_factor).tolist()))
@@ -515,7 +518,10 @@ class MainWindow(QMainWindow):
         # height, width, c = np.shape(im)
         # bytesPerLine = 3 * width
         # qImg = QImage(im.data, width, height, bytesPerLine, QImage.Format.Format_RGB32)
-        # self.lbl.setPixmap(QPixmap(qImg).scaled(self.view_width, self.view_height))
+        # QPixmap(qImg).scaled(self.view_width, self.view_height)
+        qimg = convertMatToQImage(im)
+        pix = QPixmap.fromImage(qimg)
+        self.lbl.setPixmap(pix)
 
         if not self.worker_busy and (self.state in self.state_handlers):
             w, r, e, f = self.state_handlers[self.state]
@@ -624,7 +630,7 @@ class MainWindow(QMainWindow):
 
                 cx, cy, *_ = self.client_rect
                 am_vec = enumerate(map(lambda x: x - np.array(self.dims) * 0.5, np.array(self.visible_assembling_machines)))
-                #print(list(am_vec))
+                print(list(am_vec))
                 closest_am_index = min([(i, np.inner(v,v)) for i, v in am_vec], key=lambda x: x[1])[0]
                 offs_x, offs_y = self.visible_assembling_machines[closest_am_index]
                 # offs_x, offs_y = 961, 407
@@ -883,49 +889,6 @@ class Worker(QRunnable):
             self.signals.result.emit(result)
         finally:
             self.signals.finished.emit()
-
-
-
-
-# def get_hwnd(flt):
-
-#     def enum_cb(hwnd, results):
-#         winlist.append((hwnd, win32gui.GetWindowText(hwnd)))
-
-#     toplist, winlist = [], []
-#     win32gui.EnumWindows(enum_cb, toplist)
-
-#     for hwnd, title in winlist:
-#         if flt.lower() in title.lower():
-#             return hwnd
-
-
-# def get_dpi():
-#     PROCESS_PER_MONITOR_DPI_AWARE = 2
-#     MDT_EFFECTIVE_DPI = 0
-#     shcore = ctypes.windll.shcore
-#     monitors = win32api.EnumDisplayMonitors()
-#     hresult = shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-#     assert hresult == 0
-#     dpiX = ctypes.c_uint()
-#     dpiY = ctypes.c_uint()
-#     dpi = {}
-#     for i, monitor in enumerate(monitors):
-#         shcore.GetDpiForMonitor(
-#             monitor[0].handle,
-#             MDT_EFFECTIVE_DPI,
-#             ctypes.byref(dpiX),
-#             ctypes.byref(dpiY)
-#         )
-#         dpi[monitor[0].handle] = (dpiX.value, dpiY.value)
-#     return dpi    
-
-
-# def dpi_to_scale_ratio(dpi):
-#     STANDARD_DPI = 96
-#     if len(dpi) != 2 or dpi[0] != dpi[1]:
-#         raise RuntimeError(f'non conformant DPI:{dpi[0]}x{dpi[1]}')
-#     return dpi[0] / STANDARD_DPI
 
 
 if __name__ == '__main__':
