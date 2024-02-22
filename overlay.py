@@ -1,4 +1,3 @@
-feat_yolo = True
 
 import sys, os
 import zmq
@@ -29,9 +28,6 @@ from re import match
 from collections import OrderedDict
 
 from cvutils import convertQImageToMat, convertMatToQImage
-
-# if feat_yolo:
-#     from ultralytics import YOLO
 
 SPES_API_SERVICE_ADDRESS = "tcp://127.0.0.1:3001"
 HOPS_API_SERVICE_ADDRESS = "tcp://127.0.0.1:3002"
@@ -251,8 +247,6 @@ class MainWindow(QMainWindow):
         self.mut = QMutex()
         self.tt = None
         self.msk = None
-        # if feat_yolo:
-        #     self.yolo = YOLO('best.pt')
         self.visible_assembling_machines = []
 
 
