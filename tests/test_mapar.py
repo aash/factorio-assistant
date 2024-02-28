@@ -93,7 +93,7 @@ def test_mapparser_getrate1():
     dt = millis_now() - t0
     logging.info(f'fps is: {1000 / (dt / n)}')
     r = cv.cvtColor(r, cv2.COLOR_BGR2RGB)
-    cv.imwrite('tst.png', r)
+    cv.imwrite('tmp/tst.png', r)
     d3d.stop()
     assert r.shape
 
@@ -162,7 +162,7 @@ def test_opt_flow():
             frame = cv2.circle(frame, (int(a), int(b)), 5, (0, 0, 255), -1)
         img = cv2.add(frame, mask)
 
-        cv.imwrite(f'frame{j}.png', img)
+        cv.imwrite(f'tmp/frame{j}.png', img)
 
         # Updating Previous frame and points
         old_gray = frame_gray.copy()
