@@ -1,0 +1,6 @@
+
+pywin
+pytest
+opencv-python
+PyQt6
+numpy

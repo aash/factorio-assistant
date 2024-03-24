@@ -1,6 +1,6 @@
 
 from typing import List, Tuple
-from scipy.ndimage import center_of_mass
+#from scipy.ndimage import center_of_mass
 import logging
 import ahk as autohotkey
 from mapar import MapParser

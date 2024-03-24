@@ -9,9 +9,10 @@ import cv2
 import cv2 as cv
 import sys, inspect
 from common import DataObject, get_palette
-from scipy.ndimage import center_of_mass
+#from scipy.ndimage import center_of_mass
 
 FACTORIO_WINDOW_NAME = 'Factorio'
+AHK_BINARY_PATH = 'D:/tools/AutoHotkey_1.1.37.02/AutoHotkeyU64.exe'
 
 def millis_now():
     return int(time.time() * 1000)
@@ -40,19 +41,15 @@ def test_get_client_rect():
 
 def test_mapparser_get_window_screen():
     window_name = FACTORIO_WINDOW_NAME
+    d3d = D3DShot(capture_output=CaptureOutputs.NUMPY)
     ahk = autohotkey.AHK()
     window = ahk.find_window(title=window_name)
     window_id = int(window.id, 16)
     window.activate()
     r = MapParser.get_factorio_client_rect(ahk, window_name)
     robj = DataObject(r)
-    d3d = D3DShot()
-    pilimg = d3d.screenshot(region=(robj.x, robj.y, robj.x + robj.width, robj.y + robj.height))
-    im = np.array(pilimg)
-    #im = MapParser.get_window_snapshot(window_id)
-    import cv2
-    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-    cv2.imwrite('tst.png', im)
+    im = d3d.screenshot(region=(robj.x, robj.y, robj.x + robj.width, robj.y + robj.height))
+    dump_image('im')
     assert im.shape
 
 def test_mapparser_capture_wait_next_frame():
@@ -273,9 +270,9 @@ def test_d3dshot_wait_next_frame():
         f1, t1 = s.d3d.wait_next_frame(t11)
         s.ahk.send_input('{WheelDown 3}', blocking=True)
         r = np.bitwise_xor(f0, f1)
-        cv.imwrite(f'tmp/wait_next_frame_r.png', r)
-        cv.imwrite(f'tmp/wait_next_frame_0.png', f0)
-        cv.imwrite(f'tmp/wait_next_frame_1.png', f1)
+        dump_image('r')
+        dump_image('f0')
+        dump_image('f1')
         logging.info(f'{t0}, {t1}, {t1-t0}')
         logging.info(f'{t00}, {t11}, {t11-t00}')
         assert True
@@ -307,8 +304,7 @@ def test_get_widgets():
             desc = str(i) + '-' + ','.join(map(str, lbls))
             cv.putText(c_composite, desc, np.array(brect.xy()) + np.array((10,20)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), thickness=3)
             cv.putText(c_composite, desc, np.array(brect.xy()) + np.array((10,20)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), thickness=1)
-        c_composite = cv.cvtColor(c_composite, cv.COLOR_BGR2RGB)
-        cv.imwrite('tmp/test_get_central_widget.png', c_composite)
+        dump_image('c_composite')
         assert True
 
 
@@ -499,10 +495,15 @@ def test_explore_two_by_two_area():
     from common import crop_image, Rect, MoveDirectionSimple, MoveDirectionComposite, MoveDirection, KeyState, wrap, get_ahk_sequence
     with Snail() as s:
         s.ensure_next_frame()
-        load_cached_params = False
+        load_cached_params = True
         if load_cached_params:
-            non_ui_rect = Rect(x0=0, y0=0, w=1664, h=1011)
-            char_offs = (960, 554)
+            '''
+            2024-03-25 00:07:56,369 [INFO] char entity offset: (1078, 603)
+            2024-03-25 00:07:56,369 [INFO] non ui rect: Rect(x0=0, y0=0, w=1899, h=1109)
+            '''
+
+            non_ui_rect = Rect(x0=0, y0=0, w=1899, h=1109)
+            char_offs = (1078, 603)
             grid_size = 1024
         else:
             r, f0, f1 = s.get_widget_brects()
@@ -587,11 +588,10 @@ def test_explore_two_by_two_area():
         logging.info(f'grid rect: {grid_rect}')
         logging.info(f'actual rect: {p} {q}')
         logging.info(f'grid nodes found: {pgn}')
-        return
+        #return
 
         s.ahk.send_input(seq_press)
         t1 = time.time()
-        
         while True:
             im = s.wait_next_frame()
             im = crop_image(im, non_ui_rect)
@@ -600,6 +600,9 @@ def test_explore_two_by_two_area():
             roi_img = crop_image(im, roi)
 
             cgn = s.find_grid_nodes(roi_img)
+
+
+            
             if len(pgn) != 0:
                 if len(pgn) == 4 and len(cgn) == 4:
                     raise RuntimeError('oy')

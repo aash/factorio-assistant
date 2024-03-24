@@ -1,8 +1,8 @@
 import ahk
 import win32gui
-import win32ui
-import win32con
-import win32api
+# import win32ui
+# import win32con
+# import win32api
 import numpy as np
 from common import DataObject
 
@@ -38,50 +38,50 @@ class MapParser:
     
     @classmethod
     def get_window_snapshot(cls, window_id):
-        return take_screenshot_of_window_to_numpy(window_id)
+        return None, #take_screenshot_of_window_to_numpy(window_id)
 
     @classmethod
     def get_main_window_caption(cls, window_id):
         pass
 
 
-def take_screenshot_of_window_to_numpy(hwnd):
+# def take_screenshot_of_window_to_numpy(hwnd):
         
-    # Make sure the window is in the foreground and restored
-    win32gui.SetForegroundWindow(hwnd)
-    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+#     # Make sure the window is in the foreground and restored
+#     win32gui.SetForegroundWindow(hwnd)
+#     win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
 
-    # Get the window's client area dimensions
-    left, top, right, bot = win32gui.GetClientRect(hwnd)
-    width = right - left
-    height = bot - top
+#     # Get the window's client area dimensions
+#     left, top, right, bot = win32gui.GetClientRect(hwnd)
+#     width = right - left
+#     height = bot - top
 
-    # # Adjust dimensions for GetWindowRect
-    # left, top, right, bot = win32gui.GetWindowRect(hwnd)
-    # width = right - left
-    # height = bot - top
+#     # # Adjust dimensions for GetWindowRect
+#     # left, top, right, bot = win32gui.GetWindowRect(hwnd)
+#     # width = right - left
+#     # height = bot - top
 
-    # Get window context and create a compatible DC
-    hwndDC = win32gui.GetWindowDC(hwnd)
-    mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-    saveDC = mfcDC.CreateCompatibleDC()
+#     # Get window context and create a compatible DC
+#     hwndDC = win32gui.GetWindowDC(hwnd)
+#     mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+#     saveDC = mfcDC.CreateCompatibleDC()
 
-    # Create a bitmap object
-    saveBitMap = win32ui.CreateBitmap()
-    saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-    saveDC.SelectObject(saveBitMap)
+#     # Create a bitmap object
+#     saveBitMap = win32ui.CreateBitmap()
+#     saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+#     saveDC.SelectObject(saveBitMap)
 
-    # Blit (copy) the client area of the window into our DC and bitmap
-    result = saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
+#     # Blit (copy) the client area of the window into our DC and bitmap
+#     result = saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
 
-    # Convert the bitmap to a NumPy array
-    signedIntsArray = saveBitMap.GetBitmapBits(True)
-    img = np.frombuffer(signedIntsArray, dtype='uint8').reshape(height, width, 4).copy()
+#     # Convert the bitmap to a NumPy array
+#     signedIntsArray = saveBitMap.GetBitmapBits(True)
+#     img = np.frombuffer(signedIntsArray, dtype='uint8').reshape(height, width, 4).copy()
 
-    # Cleanup
-    win32gui.DeleteObject(saveBitMap.GetHandle())
-    saveDC.DeleteDC()
-    mfcDC.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwndDC)
+#     # Cleanup
+#     win32gui.DeleteObject(saveBitMap.GetHandle())
+#     saveDC.DeleteDC()
+#     mfcDC.DeleteDC()
+#     win32gui.ReleaseDC(hwnd, hwndDC)
 
-    return img
+#     return img
