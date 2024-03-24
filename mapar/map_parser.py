@@ -4,6 +4,7 @@ import win32ui
 import win32con
 import win32api
 import numpy as np
+from common import DataObject
 
 
 class MapParser:
@@ -16,13 +17,19 @@ class MapParser:
 
 
     @classmethod
-    def get_factorio_client_rect(cls, ahk, window_name):
+    def get_factorio_client_rect(cls, ahk: ahk.AHK, window_name: str) -> dict:
         window = ahk.find_window(title=window_name)
         window_id = int(window.id, 16)
         window.activate()
         client_area_zero = win32gui.ClientToScreen(window_id, (0,0))
         cr = win32gui.GetClientRect(window_id)
-        return {'x': client_area_zero[0], 'y': client_area_zero[1], 'width': cr[2], 'height': cr[3]}
+        client_rect_dict = {
+            'x': client_area_zero[0],
+            'y': client_area_zero[1],
+            'width': cr[2],
+            'height': cr[3]
+        }
+        return client_rect_dict
 
 
     @classmethod
@@ -32,6 +39,10 @@ class MapParser:
     @classmethod
     def get_window_snapshot(cls, window_id):
         return take_screenshot_of_window_to_numpy(window_id)
+
+    @classmethod
+    def get_main_window_caption(cls, window_id):
+        pass
 
 
 def take_screenshot_of_window_to_numpy(hwnd):
