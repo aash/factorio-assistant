@@ -7,7 +7,6 @@ import ahk
 from PyQt5.QtGui import QCloseEvent, QPainter, QColor, QPen, QBrush, QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QGraphicsLayout, QBoxLayout, QSizePolicy, QLabel
 from PyQt5.QtCore import QRect, Qt, pyqtSignal
-from outlined_label import OutlinedLabel
 import numpy as np
 
 def millis_now():
@@ -197,6 +196,99 @@ class TransparentWindow(QMainWindow):
             elif marker.marker_type == 'image':
                 x, y, w, h = marker.geometry
                 painter.drawImage(x, y, self.img)
+
+import math
+from PyQt5.QtWidgets import QLabel
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QBrush, QPen, QFontMetrics, QPainterPath, QPainter
+import time
+
+class OutlinedLabel(QLabel):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.w = 10
+        self.mode = False
+        self.setBrush(Qt.white)
+        self.setPen(Qt.black)
+        self.setStyleSheet('border: none;')
+        self._text_mask = ''
+
+    def scaledOutlineMode(self):
+        return self.mode
+
+    def setScaledOutlineMode(self, state):
+        self.mode = state
+
+    def outlineThickness(self):
+        return self.w * self.font().pointSize() if self.mode else self.w
+
+    def setOutlineThickness(self, value):
+        self.w = value
+
+    def setBrush(self, brush):
+        if not isinstance(brush, QBrush):
+            brush = QBrush(brush)
+        self.brush = brush
+
+    def setPen(self, pen):
+        if not isinstance(pen, QPen):
+            pen = QPen(pen)
+        pen.setJoinStyle(Qt.RoundJoin)
+        self.pen = pen
+
+    def sizeHint(self):
+        w = math.ceil(self.outlineThickness() * 2)
+        return super().sizeHint() + QSize(w, w)
+    
+    def minimumSizeHint(self):
+        w = math.ceil(self.outlineThickness() * 2)
+        return super().minimumSizeHint() + QSize(w, w)
+
+    def setTextMask(self, text):
+        self._text_mask = text
+
+    def text_mask(self):
+        return self._text_mask
+    
+    def paintEvent(self, event):
+        w = int(self.outlineThickness())
+        rect = self.rect()
+        metrics = QFontMetrics(self.font())
+        tr = metrics.boundingRect(self.text_mask()).adjusted(0, 0, w, w)
+        if self.indent() == -1:
+            if self.frameWidth():
+                indent = (metrics.boundingRect('x').width() + w * 2) / 2
+            else:
+                indent = w
+        else:
+            indent = self.indent()
+
+        if self.alignment() & Qt.AlignLeft:
+            x = rect.left() + indent - min(metrics.leftBearing(self.text()[0]), 0)
+        elif self.alignment() & Qt.AlignRight:
+            x = rect.x() + rect.width() - indent - tr.width()
+        else:
+            x = (rect.width() - tr.width()) / 2
+            
+        if self.alignment() & Qt.AlignTop:
+            y = rect.top() + indent + metrics.ascent()
+        elif self.alignment() & Qt.AlignBottom:
+            y = rect.y() + rect.height() - indent - metrics.descent()
+        else:
+            y = (rect.height() + metrics.ascent() - metrics.descent()) / 2
+
+        path = QPainterPath()
+        path.addText(x, y, self.font(), self.text())
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+
+        self.pen.setWidthF(4)
+        qp.strokePath(path, self.pen)
+        if 1 < self.brush.style() < 15:
+            qp.fillPath(path, self.palette().window())
+        qp.fillPath(path, self.brush)
+
 
 if __name__ == '__main__':
     #json_to_marker('{"marker_type": "rectangle", "geometry": [10, 10, 100, 100], "color": [255, 0, 0, 255], "data": {"name": "rect1"}}')
