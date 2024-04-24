@@ -12,6 +12,4 @@ test-imgs/**
 __pycache__
 tmp/**
 best.pt
-1.ipynb
-2.ipynb
 logs/**
