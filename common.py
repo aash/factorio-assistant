@@ -3,6 +3,10 @@ import cv2 as cv
 from enum import Enum
 from dataclasses import dataclass
 from typing import List
+from copy import deepcopy
+import time
+import contextlib
+import itertools
 
 class DataObject:
     def __init__(self, data_dict):
@@ -50,6 +54,7 @@ class Rect:
     y0: int
     w: int
     h: int
+
 
     def top(self) -> int:
         return self.y0
@@ -99,29 +104,36 @@ class Rect:
     def xy(self):
         return (self.x0, self.y0)
     
-    @classmethod
-    def from_xyxy(cls, _x0: int, _y0: int, _x1: int, _y1: int) -> 'Rect':
-        x0 = min(_x0, _x1)
-        y0 = min(_y0, _y1)
-        x1 = max(_x0, _x1)
-        y1 = max(_y0, _y1)
-        return Rect(x0, y0, x1 - x0, y1 - y0)
+    def sub_rect(self, sub: 'Rect'):
+        return Rect(self.x0 + sub.x0, self.y0 + sub.y0, *sub.wh())
+    
+    def moved(self, dx: int, dy: int):
+        return Rect(self.x0 + dx, self.y0 + dy, *self.wh())
+    
+    def __add__(self, other: np.array):
+        return Rect(self.x0 + other[0], self.y0 + other[1], self.w, self.h)
     
     @classmethod
-    def from_top_left(cls, _x: int, _y: int, _w: int, _h: int) -> 'Rect':
-        return Rect(_x, _y, _w, _h)
+    def from_xyxy(cls, x0: int, y0: int, x1: int, y1: int) -> 'Rect':
+        p0, p1 = sorted((x0, x1))
+        q0, q1 = sorted((y0, y1))
+        return Rect(p0, q0, p1 - p0, q1 - q0)
+    
+    @classmethod
+    def from_top_left(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        return Rect(x, y, w, h)
 
     @classmethod
-    def from_bottom_left(cls, _x: int, _y: int, _w: int, _h: int) -> 'Rect':
-        return Rect(_x, _y - _h, _w, _h)
+    def from_bottom_left(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        return Rect(x, y - h, w, h)
 
     @classmethod
-    def from_bottom_right(cls, _x: int, _y: int, _w: int, _h: int) -> 'Rect':
-        return Rect(_x - _w, _y - _h, _w, _h)
+    def from_bottom_right(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        return Rect(x - w, y - h, w, h)
 
     @classmethod
-    def from_top_right(cls, _x: int, _y: int, _w: int, _h: int) -> 'Rect':
-        return Rect(_x - _w, _y, _w, _h)
+    def from_top_right(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        return Rect(x - w, y, w, h)
     
 @dataclass
 class Segment:
@@ -164,14 +176,17 @@ def crop_image(img: np.ndarray, r: Rect, debug = False) -> np.ndarray:
     Crops a part of an image using a rectangle defined by the top-left corner, width, and height.
     If the rectangle goes beyond the image boundaries, it will be truncated.
     """
+
+    r = deepcopy(r)
+
     x0 = max(0, r.x0)
     y0 = max(0, r.y0)
     x1 = min(img.shape[1], r.x0 + r.w)
     y1 = min(img.shape[0], r.y0 + r.h)
     if debug:
-        return img[y0:y1, x0:x1], (x0, y0), (x1, y1)
+        return img[y0:y1, x0:x1].copy(), (x0, y0), (x1, y1)
     else:
-        return img[y0:y1, x0:x1]
+        return img[y0:y1, x0:x1].copy()
 
 def erode(img: np.ndarray, sz: int, shape):
     el = cv.getStructuringElement(shape, (2 * sz + 1, 2 * sz + 1), (sz, sz))
@@ -253,3 +268,51 @@ def get_ahk_sequence(dir: MoveDirection, key_state: KeyState) -> str:
     ss = [wrap(f'{_k} {s}', '{') for _k in k]
     return ''.join(ss)
 
+
+def time_range(dur: float):
+    t0 = time.time()
+    i = 0
+    grid = [t0]
+    while True:
+        if len(grid) > 20:
+            grid.pop(0)
+        t = time.time()
+        grid.append(t)
+        if len(grid) > 1:
+            diffs = [b-a for b, a in list(zip(grid[1:], grid[:-1]))]
+            avg_time = sum(diffs) / len(diffs)
+        i += 1
+        if time.time() - t0 > dur:
+            break
+        fps = 0.0 if len(grid) < 2 or avg_time == 0 else 1 / avg_time
+        yield t, fps, i
+
+class timer_unit(Enum):
+    SECOND = 1
+    MILLISECOND = 2
+
+@contextlib.contextmanager
+def timer(unit: timer_unit = timer_unit.SECOND):
+    if unit is timer_unit.SECOND:
+        t0 = time.time()
+        yield lambda : time.time() - t0
+    elif unit is timer_unit.MILLISECOND:
+        t0 = int(1000*time.time())
+        yield lambda : int(1000*time.time()) - t0
+
+@contextlib.contextmanager
+def timer_sec():
+    t0 = time.time()
+    yield lambda : time.time() - t0
+
+@contextlib.contextmanager
+def timer_ms():
+    t0 = int(1000*time.time())
+    yield lambda : int(1000*time.time()) - t0
+
+def cart_prod(x, y):
+    return list(itertools.product(x, y))
+
+def grid(vl, hl):
+    return np.array([[(v, h) for h in hl] for v in vl])
+ 

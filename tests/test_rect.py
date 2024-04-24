@@ -1,5 +1,5 @@
 
-
+import logging
 from common import Rect, Segment
 
 def test_rect_repr_from_xyxy():
@@ -42,3 +42,9 @@ def test_rect_dynamic_call():
     m = getattr(Rect, f'from_{d[(bottom_top, right_left)]}')
     r1 = m(*r0.bottom_left(), *r0.wh())
     assert r0 == r1
+
+def test_conv():
+    a = (0, 1)
+    b = (7, 9)
+    r0 = Rect.from_xyxy(*a, *b)
+    logging.info(f'{r0}')
