@@ -6,8 +6,15 @@ import ahk
 
 from PyQt5.QtGui import QCloseEvent, QPainter, QColor, QPen, QBrush, QImage, QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QGraphicsLayout, QBoxLayout, QSizePolicy, QLabel
-from PyQt5.QtCore import QRect, Qt, pyqtSignal
+from PyQt5.QtCore import QRect, Qt, pyqtSignal, QThread, QEvent
+from PyQt5.QtWidgets import QLabel
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QBrush, QPen, QFontMetrics, QPainterPath, QPainter
+
 import numpy as np
+from collections import defaultdict
+import logging
+import math, time
 
 def millis_now():
     return int(time.time()*1000)
@@ -21,8 +28,14 @@ class Marker:
 import json
 import zmq
 
+close_event = threading.Event()
+
 def json_to_marker(json_string):
-    data = json.loads(json_string)
+    data = defaultdict(lambda: None)
+    data.update(json.loads(json_string).items())
+    # print(data)
+    if data['action'] == 'test':
+        return Marker(data={"action": "test"}, marker_type='', geometry=(), color=QColor(0, 0, 0, 0))
     return Marker(
         marker_type=data['marker_type'],
         geometry=tuple(data['geometry']),
@@ -30,25 +43,22 @@ def json_to_marker(json_string):
         data=data['data']
     )
 
-close_event = threading.Event()
-
 
 class TransparentWindow(QMainWindow):
-    new_marker_signal = pyqtSignal(Marker)
-    update_signal = pyqtSignal()
+    # new_marker_signal = pyqtSignal(Marker)
 
     def __init__(self):
         super().__init__()
 
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
-                            Qt.WindowType.WindowTransparentForInput |
-                            Qt.WindowType.WindowStaysOnTopHint
-                            #| Qt.WindowType.Tool
-                            )
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
+        #                     Qt.WindowType.WindowTransparentForInput |
+        #                     Qt.WindowType.WindowStaysOnTopHint
+        #                     #| Qt.WindowType.Tool
+        #                     )
+        # self.setAttribute(Qt.WA_TranslucentBackground)
 
 
-        self.w = QWidget()
+        self.w = QWidget(self)
         #self.w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.w.setFixedSize(1920, 1200)
         l = QGridLayout()
@@ -62,72 +72,28 @@ class TransparentWindow(QMainWindow):
 
         self.t0 = millis_now()
 
-        self.label = OutlinedLabel(self)
-        self.label.setStyleSheet("")
-        self.label.setAlignment(Qt.AlignRight)
-        self.label.setStyleSheet("font-family: 'Consolas'; color: white; font-size: 20px; ")
-        self.label.move(0, 0)
-        self.label.setTextMask("00:00.000")
-        self.label.setText("00:00.000")
-        self.label.setOutlineThickness(10)
-        self.label.setGeometry(QRect(0, 0, 300, 100))
+        # self.label = OutlinedLabel(self)
+        # self.label.setStyleSheet("")
+        # self.label.setAlignment(Qt.AlignRight)
+        # self.label.setStyleSheet("font-family: 'JetBrainsMono Nerd Font Mono', 'Consolas'; color: white; font-size: 20px; ")
+        # self.label.move(0, 0)
+        # self.label.setTextMask("00:00.000")
+        # self.label.setText("00:00.000")
+        # self.label.setOutlineThickness(10)
+        # self.label.setGeometry(QRect(0, 0, 300, 100))
 
-        self.update_timer_thread = threading.Thread(target=self.update_timer)
-        self.update_timer_thread.start()
+        # self.update_timer_thread = threading.Thread(target=self.update_timer)
+        # self.update_timer_thread.start()
         # self.hotkey_thread = threading.Thread(target=self.start_hotkey_listener)
         # self.hotkey_thread.start()
-        self.command_proc_thread = threading.Thread(target=self.accept_command)
-        self.command_proc_thread.start()
-        self.update_signal.connect(self.update)
 
-        self.markers = {
-            # 'rect1': Marker("rectangle", (10, 10, 100, 100), QColor(255, 0, 255, 255), {"name": "rect1"}),
-        }
-        self.new_marker_signal.connect(self.add_marker)
+        # self.markers = {
+        #     # 'rect1': Marker("rectangle", (10, 10, 100, 100), QColor(255, 0, 255, 255), {"name": "rect1"}),
+        # }
+        # self.new_marker_signal.connect(self.add_marker)
         #threading.Timer(3, self.close).start()
 
-    def accept_command(self):
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.REP)
-        self.socket.bind("tcp://*:5124")
-        self.poller = zmq.Poller()
-        self.poller.register(self.socket, zmq.POLLIN)
-        while not close_event.is_set():
-            try:
-                socks = dict(self.poller.poll(1000))
-                if self.socket in socks and socks[self.socket] == zmq.POLLIN:
-                    message = self.socket.recv_json()
-                    if message:
-                        self.socket.send_string("Received")
-                        marker = json_to_marker(message)
-                        if marker.data['action'] == 'add':
-                            self.new_marker_signal.emit(marker)
-                        elif marker.data['action'] == 'remove':
-                            if marker.data['name'] in self.markers:
-                                del self.markers[marker.data['name']]
-                        elif marker.data['action'] == 'add_image':
-                            data = self.socket.recv()
-                            self.socket.send_string('Received')
-                            x, y, w, h = marker.geometry
-                            self._img = np.frombuffer(data, dtype=np.uint8).reshape((h, w, 3))
-                            self.img = QImage(self._img.data, w, h, w*3, QImage.Format.Format_RGB888)
-                            self.new_marker_signal.emit(marker)
-                            print(f'add image {len(data)} geometry: {marker.geometry}')
 
-            except zmq.error.ContextTerminated as e:
-                print(f'ContextTerminated: {e}')
-                break
-            except zmq.error.ZMQError as e:
-                if e.errno == zmq.EAGAIN:
-                    continue
-                print(f'ZMQError: {e}')
-                break
-            except zmq.error.Again:
-                pass
-        print('end accept command thread')
-        self.socket.close()
-        self.context.term()
- 
 
     def start_hotkey_listener(self):
         # def close_handler():
@@ -143,33 +109,19 @@ class TransparentWindow(QMainWindow):
     def add_marker(self, marker):
         self.markers[marker.data['name']] = marker
 
-    def closeEvent(self, a0: QCloseEvent | None) -> None:
+    def closeEvent(self, event: QEvent | None) -> None:
+        global close_event
         close_event.set()
-        print('close event')
+        self.markers.clear()
 
-        threading.Timer(0.5, self.join_threads).start()
-
-        return super().closeEvent(a0)
-
-    def join_threads(self):
-        self.update_timer_thread.join()
-        # self.hotkey_thread.join()
-        # self.command_proc_thread.join()
-        # keyboard.unhook_all()
-        # keyboard.unhook_all_hotkeys()
-        QApplication.quit()
+        event.accept()
 
     def update_timer(self):
-        while not close_event.is_set():
-            time.sleep(0.01)
-            millis = millis_now() - self.t0
-            seconds = millis // 1000
-            minutes = seconds // 60
-            # if not close_event.is_set():
-            self.label.setText("{:02d}:{:02d}.{:03d}".format(minutes, seconds % 60, millis % 1000))
-            self.update_signal.emit()
-            # print(f'update timer thread {millis}')
-        print('timer thread ended')
+        millis = millis_now() - self.t0
+        seconds = millis // 1000
+        minutes = seconds // 60
+        self.label.setText("{:02d}:{:02d}.{:03d}".format(minutes, seconds % 60, millis % 1000))
+        self.update()
 
     def mousePressEvent(self, event):
         event.ignore()
@@ -196,12 +148,6 @@ class TransparentWindow(QMainWindow):
             elif marker.marker_type == 'image':
                 x, y, w, h = marker.geometry
                 painter.drawImage(x, y, self.img)
-
-import math
-from PyQt5.QtWidgets import QLabel
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QBrush, QPen, QFontMetrics, QPainterPath, QPainter
-import time
 
 class OutlinedLabel(QLabel):
     
@@ -290,16 +236,72 @@ class OutlinedLabel(QLabel):
         qp.fillPath(path, self.brush)
 
 
+def accept_command(win, app):
+    '''
+    context = zmq.Context(io_threads=1)
+    socket = context.socket(zmq.REP)
+    socket.bind("tcp://*:5124")
+    # socket.setsockopt(zmq.RCVTIMEO, 200)
+    # socket.setsockopt(zmq.SNDTIMEO, 200)
+    poller = zmq.Poller()
+    poller.register(socket, zmq.POLLIN)
+    while not close_event.is_set():
+        try:
+            socks = dict(poller.poll(300))
+            if socket in socks and socks[socket] == zmq.POLLIN:
+                message = socket.recv_json()
+                if message:
+                    marker = json_to_marker(message)
+                    socket.send_string("Received")
+                    if marker.data['action'] == 'add':
+                        win.new_marker_signal.emit(marker)
+                    elif marker.data['action'] == 'remove':
+                        if marker.data['name'] in win.markers:
+                            del win.markers[marker.data['name']]
+                    elif marker.data['action'] == 'add_image':
+                        data = socket.recv()
+                        socket.send_string('Received')
+                        x, y, w, h = marker.geometry
+                        win._img = np.frombuffer(data, dtype=np.uint8).reshape((h, w, 3))
+                        win.img = QImage(win._img.data, w, h, w*3, QImage.Format.Format_RGB888)
+                        win.new_marker_signal.emit(marker)
+                    elif marker.data['action'] == 'test':
+                        print('test command')
+                    elif marker.data['action'] == 'exit':
+                        close_event.set()
+                        print('exit command')
+        except zmq.error.ContextTerminated as e:
+            print(f'ContextTerminated: {e}')
+            break
+        except zmq.error.ZMQError as e:
+            if e.errno == zmq.EAGAIN:
+                print(f'retry')
+                continue
+            print(f'ZMQError: {e}')
+            break
+    print('end accept command thread')
+    if not close_event.is_set():
+        close_event.set()
+    poller.unregister(socket)
+    socket.close()
+    '''
+    global close_event
+    while not close_event.is_set():
+        time.sleep(0.01)
+    # time.sleep(500)
+    # win.close()
+    print('exit command thread')
+
 if __name__ == '__main__':
     #json_to_marker('{"marker_type": "rectangle", "geometry": [10, 10, 100, 100], "color": [255, 0, 0, 255], "data": {"name": "rect1"}}')
     app = QApplication(sys.argv)
     window = TransparentWindow()
-    # a = ahk.AHK()
     s = app.primaryScreen().size()
     window.setGeometry(0, 0, s.width(), s.height())
+    cmd_thread = threading.Thread(target=accept_command, args=(window, app))
+    cmd_thread.start()
     window.show()
-    # a.add_hotkey('^g', callback=window.close)
-    # a.start_hotkeys()
-    app.exec()
+    c = app.exec()
+    cmd_thread.join()
     print('end of main')
-    sys.exit(0)
+    # sys.exit(c)
