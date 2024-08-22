@@ -5,7 +5,7 @@ import logging
 import ahk as autohotkey
 from mapar import MapParser
 from d3dshot_stub import D3DShot, CaptureOutputs
-from common import DataObject, get_palette, Rect, is_inside, label_brect, UiLocation, erode, dilate, timer_ms
+from common import * 
 import cv2 as cv
 import numpy as np
 import time
@@ -54,28 +54,60 @@ class WidgetType(Enum):
         return self.name.lower()
 
 
+class SnailWindowMode(Enum):
+    WINDOWED = 1
+    FULL_SCREEN = 2
+
 class Snail:
 
     FACTORIO_WINDOW_NAME = 'Factorio'
     COLOR_BLACK = (0, 0, 0)
     COLOR_GREEN = (0, 255, 0)
 
-    def __init__(self):
+    def __init__(self, window_mode = SnailWindowMode.WINDOWED):
         window_name = self.FACTORIO_WINDOW_NAME
         self.ahk = autohotkey.AHK()
-        self.ahk.set_coord_mode('Mouse', 'Client')
-        self.window = self.ahk.find_window(title=window_name)
-        self.window_id = int(self.window.id, 16)
-        self.window.activate()
-        robj = DataObject(MapParser.get_factorio_client_rect(self.ahk, window_name))
-        self.window_rect = Rect(robj.x, robj.y, robj.width, robj.height)
+        self.window_mode = window_mode
+        if self.window_mode == SnailWindowMode.WINDOWED:
+            self.ahk.set_coord_mode('Mouse', 'Client')
+            self.window = self.ahk.find_window(title=window_name)
+            self.window_id = int(self.window.id, 16)
+            self.window.activate()
+            robj = DataObject(MapParser.get_factorio_client_rect(self.ahk, window_name))
+            self.window_rect = Rect(robj.x, robj.y, robj.width, robj.height)
+        else:
+            self.ahk.set_coord_mode('Mouse', 'Screen')
+            self.window = None
+            self.window_id = None
+            self.window_rect = get_screen_rect()
         self.d3d_fps = 30
-        pass
+        self.debug_ui_rect = None
 
     def __enter__(self):
         logging.info('Starting snail')
         self.d3d = D3DShot(capture_output=CaptureOutputs.NUMPY, fps = self.d3d_fps, roi = self.window_rect)
         self.d3d.capture(target_fps=self.d3d_fps, region=self.window_rect.xyxy())
+        logging.info(f'snail started {self.window_rect}')
+        self.ensure_next_frame()
+        r, f0, f1 = self.get_widget_brects(default_delay=0.6)
+        self.non_ui_rect = self.get_non_ui_rect(r)
+        logging.info(f'non ui rect: {self.non_ui_rect}')
+        non_ui_img = self.wait_next_frame()
+        ents = self.get_entity_coords(non_ui_img)
+        logging.info(ents)
+        if len(ents) > 0:
+            self.entity_positions_enabled = True
+            self.char_offset = self.get_char_coords(non_ui_img)
+            logging.info(f'character offset: {self.char_offset}')
+        else:
+            self.entity_positions_enabled = False
+            if self.window_rect.wh() == (3840, 2160):
+                self.char_offset = np.array((1921, 1081))
+            elif self.window_rect.wh() == (1920, 1080):
+                self.char_offset = np.array((960, 541))
+            else:
+                self.char_offset = None
+        time.sleep(0.5)
         return self
 
     def __exit__(self, *exc_details):
@@ -99,11 +131,11 @@ class Snail:
             finalize()
         return im1, im2
 
-    def get_widget_brects(self) -> Rect:
+    def get_widget_brects(self, default_delay=0.2) -> Tuple[List[Rect], np.ndarray, np.ndarray]:
         it_count = 2
-        sleep_time = 0.1
+        sleep_time = default_delay
         def initialize():
-            self.window.activate()
+            time.sleep(sleep_time)
             self.ahk.mouse_move(1, 1)
             time.sleep(sleep_time)
         def action():
@@ -114,6 +146,13 @@ class Snail:
         im0, im1 = self.get_diff_image(action, initialize, finalize)
         brects = get_bounding_rects(im0, im1)
         return brects, im0, im1
+    
+    def get_widget_brects1(self):
+        self.ahk.mouse_move(1, 1)
+        im1 = self.wait_next_frame()
+        with zoom_and_restore(self.ahk, 2, 0.2):
+            im2 = self.wait_next_frame()
+        brects = get_bounding_rects(im1, im2)
 
     def filter_brects(self, rects: List[Rect], query: WidgetType = WidgetType.CENTRAL) -> Rect:
         win = Rect(0, 0, *self.window_rect.wh())
@@ -126,8 +165,8 @@ class Snail:
         f, *_ = self.d3d.wait_next_frame(roi=roi)
         return f
 
-    def wait_next_frame_with_time(self) -> np.ndarray:
-        f, t = self.d3d.wait_next_frame()
+    def wait_next_frame_with_time(self, roi: Rect = None):
+        f, t = self.d3d.wait_next_frame(roi=roi)
         return f, t
     
     def ensure_next_frame(self):
@@ -144,7 +183,7 @@ class Snail:
 
 
     
-    def non_ui_rect(self, r):
+    def get_non_ui_rect(self, r):
         char_brect = self.filter_brects(r, WidgetType.CHARACTER)
         qbar_brect = self.filter_brects(r, WidgetType.QUICKBAR)
         mmap_brect = self.filter_brects(r, WidgetType.MINIMAP)
@@ -153,7 +192,7 @@ class Snail:
         non_ui_rect = Rect(0, 0, w, h)
         return non_ui_rect
 
-    
+    @classmethod
     def find_grid_nodes(cls, img: np.ndarray, grid_color = COLOR_BLACK):
         out = img
         out = cv.inRange(out, grid_color, grid_color)
@@ -188,7 +227,19 @@ class Snail:
         img_center = np.array((w // 2, h // 2))
         locations = [(c, np.linalg.norm(c - img_center)) for c in cc]
         x = min(locations, key=lambda x: x[1])
-        return x[0]
+        return np.array(x[0])
+
+    def get_entity_coords(cls, img: np.ndarray, entity_color = COLOR_GREEN):
+        out = img
+        out = cv.inRange(out, entity_color, entity_color)
+        contour, _ = cv.findContours(out, cv.RETR_TREE, cv.CHAIN_APPROX_NONE)
+        cc = set()
+        for con in contour:
+            x, y, w, h = cv.boundingRect(con)
+            if w * h > 25 and abs(w - h) < 2:
+                c = x + w//2, y + h//2
+                cc.add(c)
+        return cc
 
 
 def get_grid_rect(grid_wh, grid_node, char_offs):
@@ -205,16 +256,6 @@ def get_grid_rect(grid_wh, grid_node, char_offs):
     m = getattr(Rect, f'from_{d[(bottom_top, right_left)]}')
     return m(*grid_node, *grid_wh)
 
-
-@contextmanager
-def zoom_and_restore(ctx, n: int, sleep_time: float):
-    for i in range(n):
-        ctx.ahk.send('{WheelUp}')
-        time.sleep(sleep_time)
-    yield
-    for i in range(n):
-        ctx.ahk.send('{WheelDown}')
-        time.sleep(sleep_time)
 
 
 def chk(img, p):
@@ -238,40 +279,66 @@ def chk(img, p):
         return 'small'
     return 'none'
 
-def get_grid(im, threshold = 100, grid_color = (0,0,0)):
-    def get_trilples(lst):
-        triples = []
-        if len(lst) >= 3:
-            for i in range(len(lst)-2):
-                if lst[i] + 1 == lst[i+1] and lst[i+1] + 1 == lst[i+2]:
-                    triples.append((lst[i], lst[i+1], lst[i+2]))
-        return triples
-    def filter_triples(lst):
-        l = lst
-        ml = []
-        for t in get_trilples(lst):
-            ml.append(t[1])
-            l.remove(t[0])
-            l.remove(t[2])
-        return l, ml
-    out = im
-    h, w, *_ = out.shape
-    out = cv.inRange(out, grid_color, grid_color)
-    r = []
-    for ax, mx in zip([0, 1], [h, w]):
-        s = np.sum(out/255, axis=ax)
-        lines = list(np.where(np.abs(s - mx) <= threshold)[0])
-        l, ml = filter_triples(lines)
-        r.append((l, ml))
-    nodes = list(itertools.product(r[0][0], r[1][0]))
-    p = nodes[0]
-    ds = set()
-    for n in nodes[1:]:
-        if n[0] == p[0]:
-            d = n[1] - p[1]
-            ds.add(d)
-        else:
-            d = n[0] - p[0]
-            ds.add(d)
-        p = n
-    return r[0][0], r[1][0], r[0][1], r[1][1], ds
+# def get_grid(im, threshold = 100, grid_color = (0,0,0)):
+#     def get_trilples(lst):
+#         triples = []
+#         if len(lst) >= 3:
+#             for i in range(len(lst)-2):
+#                 if lst[i] + 1 == lst[i+1] and lst[i+1] + 1 == lst[i+2]:
+#                     triples.append((lst[i], lst[i+1], lst[i+2]))
+#         return triples
+#     def filter_triples(lst):
+#         l = lst
+#         ml = []
+#         for t in get_trilples(lst):
+#             ml.append(t[1])
+#             l.remove(t[0])
+#             l.remove(t[2])
+#         return l, ml
+#     def get_diffs(l):
+#         return list(map(lambda x: x[0] - x[1], zip(l[1:], l[:-1])))
+#     def get_most_frequent_value(l):
+#         counts = np.bincount(l)
+#         sorted_values = np.argsort(-counts)
+#         most_frequent_value = sorted_values[0]
+#         return most_frequent_value
+#     def find_a_for_max_count(arr, w):
+#         max_count = 0
+#         best_a = arr.min()  
+#         for a in arr:
+#             count = np.count_nonzero([(val - a) % w == 0 for val in arr])
+#             if count > max_count:
+#                 max_count = count
+#                 best_a = a
+#         return best_a
+
+#     out = im
+#     h, w, *_ = out.shape
+#     out = cv.inRange(out, grid_color, grid_color)
+#     # cv.imwrite('grid.png', out)
+#     r = []
+#     for ax, mx in zip([0, 1], [h, w]):
+#         s = np.sum(out/255, axis=ax)
+#         lines = list(np.where(np.abs(s - mx) <= threshold)[0])
+#         l, ml = filter_triples(lines)
+#         r.append((l, ml))
+    
+#     # get lengths between consequtive grid lines
+#     # logging.info(f'vl: {r[0][0]}\nhl: {r[1][0]}')
+#     vdiffs = get_diffs(r[0][0])
+#     hdiffs = get_diffs(r[1][0])
+#     # most probable grid size
+#     # logging.info(f'vdiffs: {vdiffs}\nhdiffs: {hdiffs}')
+#     grid_size = get_most_frequent_value(vdiffs + hdiffs)
+#     # find the most probable starting point
+#     vstart = find_a_for_max_count(np.array(r[0][0]), grid_size)
+#     hstart = find_a_for_max_count(np.array(r[1][0]), grid_size)
+#     vn = list(range(vstart, w, grid_size))
+#     hn = list(range(hstart, h, grid_size))
+
+#     # logging.info(f'vstart: {vstart}, hstart: {hstart}, grid_size: {grid_size}')
+#     # logging.info(f'vn: {vn}\nhn: {hn}')
+
+
+
+#     return vn, hn, r[0][1], r[1][1], grid_size
