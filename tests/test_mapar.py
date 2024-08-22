@@ -1,6 +1,7 @@
 from packaging import version
 import logging
-from mapar import MapParser, Snail
+from mapar import *
+from mapar.snail import *
 import ahk as autohotkey
 import d3dshot_stub as d3dshot
 import time
@@ -9,13 +10,19 @@ import numpy as np
 import cv2
 import cv2 as cv
 import sys, inspect
-from common import DataObject, get_palette
 from copy import deepcopy
 import pytest
 from pytest import fail
 #from scipy.ndimage import center_of_mass
 from common import *
 import zmq
+import contextlib
+import json
+import threading
+import multiprocessing, subprocess
+import runpy
+import os, signal
+import queue
 
 FACTORIO_WINDOW_NAME = 'Factorio'
 AHK_BINARY_PATH = 'D:/portable/ahk/AutoHotkeyU64.exe'
@@ -304,160 +311,190 @@ def test_get_non_ui_screen():
         assert w < s.window_rect.w and h < s.window_rect.h
 
 def test_extract_grid_nodes():
-    from mapar.snail import WidgetType, get_grid_rect, get_grid, chk
-    from common import crop_image, Rect, MoveDirectionSimple, MoveDirectionComposite, MoveDirection, KeyState, wrap, get_ahk_sequence
     with Snail() as s:
-        s.ensure_next_frame()
-        r, f0, f1 = s.get_widget_brects()
-        time.sleep(0.3)
-        non_ui_rect = s.non_ui_rect(r)
-        logging.info(f'non ui rect: {non_ui_rect}')
-        non_ui_img = crop_image(f0, non_ui_rect)
-        nodes = get_grid(non_ui_img)
+        # nodes = get_grid(non_ui_img)
+        non_ui_img = s.wait_next_frame(s.non_ui_rect)
         vl, hl, mvl, mhl, ds = get_grid(non_ui_img)
-        w, h = non_ui_rect.wh()
-        assert w / max(ds) <= len(vl) + 1
-        assert w / max(ds) >= len(vl) - 1
-        assert h / max(ds) <= len(hl) + 1
-        assert h / max(ds) >= len(hl) - 1
-        assert len(ds) < 3
-        logging.info(f'{nodes}')
-        logging.info(f'{ds}')
+        w, h = s.non_ui_rect.wh()
+        assert w / ds <= len(vl) + 1
+        assert w / ds >= len(vl) - 1
+        assert h / ds <= len(hl) + 1
+        assert h / ds >= len(hl) - 1
+        # logging.info(f'{nodes}')
+        # logging.info(f'{ds}')
         dump_image('non_ui_img')
 
 
 from common import grid
-from mapar.snail import get_grid
 import random
 
-def match_grid_nodes(non_ui_img, non_ui_img1, base_node=None):
-    vl0, hl0, mvl0, mhl0, ds0 = get_grid(non_ui_img)
-    vl1, hl1, mvl1, mhl1, ds1 = get_grid(non_ui_img1)
-    m0 = grid(vl0, hl0) 
-    m1 = grid(vl1, hl1)
-    # selection of base node
-    '''
-    10
-    0..9
-    10 - 4 6
-    7 8 9
-    '''
-    if base_node is None or (base_node[0] < 3 or base_node[1] < 3 or base_node[0] > len(vl0) - 4 or base_node[1] > len(hl0) - 4):
-        ij = 3 * np.array((len(vl0), len(hl0))) // 4
-    else:
-        ij = base_node
-    st = ij
-    d = np.array([[0, 0], [-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]])
-    r = []
-    cont = True
+@dataclass
+class frame_desc:
+    vl: np.ndarray
+    hl: np.ndarray
+    mvl: np.ndarray
+    mhl: np.ndarray
+    grid: np.ndarray
+    image: np.ndarray
+    edge: np.ndarray
+    grid_width: int
+    char_loc_cell=point2d.fromxy(0, 0)
+    def get_nodes(self):
+        return (self.vl, self.hl, self.mvl, self.mhl, self.grid_width)
 
+def get_frame_desc(frame: np.ndarray) -> frame_desc:
+    vl, hl, mvl, mhl, ds = get_grid(frame)
+    edge = cv.Canny(frame, 150, 205)
+    g = grid(vl, hl)
+    return frame_desc(vl, hl, mvl, mhl, g, frame, edge, ds)
+
+def get_cell_at(img: np.ndarray, p: np.ndarray, w: int) -> np.ndarray:
+    return crop_image(img, Rect(*p, w, w))
+
+def char_cells(gw, gh):
+    st = [[0, 0], [0, -1], [1, 0], [1, -1], [-1, 0], [-1, -1], [-1, -2], [0, -2], [2, 0], [2, -1]]
+    t = np.array((gh, gw)) // 2
+    t = set(map(lambda x: tuple(t + x), st))
+    return t
+
+def match_two_frames(frame0: frame_desc, frame1: frame_desc, ani_mask: np.ndarray=None, base_node=None, frind: int = 0):
+    assert frame0.grid_width == frame1.grid_width
+    w = frame0.grid_width
+    cell_char_coord = frame0.char_loc_cell.xy
+    vl0, hl0, mvl0, mhl0, ds0 = frame0.get_nodes()
+    vl1, hl1, mvl1, mhl1, ds1 = frame1.get_nodes()
+    # select furthest cell across movement direction
+    def is_in_rectangle(p: np.ndarray, r: Rect) -> bool:
+        return (r.x0 <= p[0] <= r.x0 + r.w) and (r.y0 <= p[1] <= r.y0 + r.h)
+    
+    d = list(map(np.array, itertools.product([-1, 0, 1], [-1, 0, 1])))
     iw = len(vl0)
     ih = len(hl0)
-    a = range(iw // 4, 3 * iw // 4)
-    b = range(ih // 4, 3 * ih // 4)
-
+    a = range(1, iw - 3)
+    b = range(1, ih - 3)
     ind = list(map(np.array, itertools.product(a, b)))
-    random.shuffle(ind)
-    candidates = ind[:5] + [ij]
-    # logging.info(f'candidates: {candidates}')
+    gw, gh = len(frame0.vl), len(frame0.hl)
+    cc = char_cells(gw, gh)
+    fh, fw, *_ = frame0.image.shape
+    cc_ij = get_char_cell(frame0, point2d.fromxy(fw//2, fh//2))
+
+    def is_animated_cell(amap, ij):
+        amh, amw, *_ = amap.shape
+        midp = np.array((amh, amw)) // 2
+        ji = np.array([ij[1], ij[0]])
+        return amap[*(midp + ji)] == 255
+
+    if frame0.vl == frame1.vl and frame0.hl == frame1.hl:
+        nzc_threshold = 0.1
+        xored = cv.bitwise_xor(frame0.image, frame1.image)
+        mask = np.all(xored != [0, 0, 0], axis=-1).astype(np.uint8) * 255
+        am = np.zeros(shape=(gh, gw), dtype=np.uint8)
+        for (ix, x) in enumerate(frame0.vl):
+            for (iy, y) in enumerate(frame0.hl):
+                if (ix, iy) in cc:
+                    continue
+                c = get_cell_at(mask, np.array((x, y)), w)
+                nz = np.count_nonzero(c)
+                am[iy][ix] = 255 if nz > nzc_threshold * w * w else 0
+        # logging.info(f'frame grid shape: {am.shape}')
+        # dump_image('am', f'_am_{frind:03d}')
+        amh, amw, *_ = ani_mask.shape
+        midp = np.array((amh, amw)) // 2
+        am1 = ani_mask[midp[0]:midp[0] + gh, midp[1]:midp[1] + gw]
+        sep = np.zeros(shape=(3,3), dtype=np.uint8)
+        out_am = hstack([am, sep, am1])
+        # dump_image('out_am', f'_am_{frind:03d}')
+
+
+    # logging.info(f'cell char coord: {frind} {cell_char_coord}')
+
+    # filter out animated cells
+    ind_filtered = []
+    for ij in ind:
+        if not is_animated_cell(ani_mask, ij - cc_ij + cell_char_coord) and (tuple(ij) not in cc):
+            ind_filtered.append(ij)
+
+    random.shuffle(ind_filtered)
+    if base_node is None or not is_in_rectangle(base_node, Rect.from_xyxy(a[0], b[0], a[-1], b[-1])):
+        candidates = ind_filtered[:10]
+    else:
+        candidates = ind_filtered[:9] + [base_node]
+
+    def is_cell_match(cell0, cell1, w):
+        diff = cv.bitwise_xor(cell0, cell1)
+        diff = cv.cvtColor(diff, cv.COLOR_BGR2GRAY)
+        c = cv.countNonZero(diff)
+        return c / (w * w) <= 0.2
+    
+    canvas = np.zeros_like(frame0.image)
+    for ij in candidates:
+        p = frame0.grid[*ij]
+        cv.rectangle(canvas, p, p + [w, w], (128,128,0), -1)
+    im0 = frame0.image.copy()
+    
+
+    # im0 = cv.addWeighted(im0, 0.7, canvas, 0.3, 0, im0)
+    # out_img = hstack([im0, frame1.image])
+    # dump_image('out_img', f'_out_img_{frind:03d}')
+         
+
     while len(candidates):
-        ij = candidates.pop()
-        p00, p01 = m0[*ij], m0[*(ij + (1, 1))]
-        g1 = crop_image(non_ui_img, Rect.from_xyxy(*p00, *p01))
+        ij0 = np.array(candidates.pop())
+        cell0 = get_cell_at(frame0.image, frame0.grid[*ij0], w)
         for _d in d:
-            ij1 = np.array(ij) + _d
-            p10 = m1[*ij1]
-            p11 = m1[*(ij1 + (1,1))]
-            g2 = crop_image(non_ui_img1, Rect.from_xyxy(*p10, *p11))
-            if g1.shape != g2.shape:
-                h1, w1, *_ = g1.shape
-                h2, w2, *_ = g2.shape
-                g1_ = g1[0:min(h1, h2), 0:min(w1, w2)]
-                g2_ = g2[0:min(h1, h2), 0:min(w1, w2)]
-            else:
-                g1_ = g1
-                g2_ = g2
-            diff = cv.bitwise_xor(g1_, g2_)
-            mask = (diff != (0,0,0)).astype(np.uint8) * 255
-            # res = np.concatenate((g1_, g2_, diff, mask), axis=1)
-            # dump_image('res', f'_res_{_d[0]:+03}_{_d[1]:+03}')
-            h, w, *_ = mask.shape
-            mask = cv.cvtColor(mask, cv.COLOR_BGR2GRAY)
-            c = cv2.countNonZero(mask)
-            # logging.info(f'non zero: {c} {c / (w*h)} {_d}')
-            if c / (w * h) <= 0.7:
-                return ij, ij1, m0, m1, (vl0, hl0, mvl0, mhl0), (vl1, hl1, mvl1, mhl1)
-    logging.info(f'started with {st} and ran out of cadidates')
-    return None, None, None, None, None, None
+            ij1 = ij0 + _d
+            cell1 = get_cell_at(frame1.image, frame1.grid[*ij1], w)
+            # xored = cv.bitwise_xor(cell0, cell1)
+            # img_out = np.concatenate((cell0, cell1, xored), axis=1)
+            # cv.imwrite(f'tmp/cells_{ij0[0]}{ij0[1]}_{ij1[0]}{ij1[1]}.bmp', img_out)
+            if is_cell_match(cell0, cell1, w):
+                p0 = frame0.grid[*ij0]
+                p1 = frame1.grid[*ij1]
+                diff = p1 - p0
+                # validate diff
+                dcheck = True
+                for ij in candidates[-3:]:
+                    p = frame0.grid[*ij]
+                    c0 = get_cell_at(frame0.image, p, w)
+                    c1 = get_cell_at(frame1.image, p + diff, w)
+                    if not is_cell_match(c0, c1, w):
+                        # logging.info(f'failed double check {ij0} {ij1}')
+                        r = hstack([c0, c1])
+                        # r = np.concatenate((c0, c1), axis=1)
+                        # dump_image('r', f'_r_fdcheck_{frind}_{hash(tuple(p))}')
+                        dcheck = False
+                        break
+                if dcheck:
+                    return ij0, ij1
+    logging.info(f'started with {base_node} and ran out of cadidates')
+    return None, None
 
 
 def test_extract_grid_and_match():
-    from mapar.snail import WidgetType, get_grid_rect, get_grid, chk
+    from mapar.snail import WidgetType, get_grid_rect, chk
     from common import crop_image, Rect, MoveDirectionSimple, MoveDirectionComposite, MoveDirection, KeyState, wrap, get_ahk_sequence
-    with Snail() as s:
-        non_ui_img = cv.imread('tmp/rec6/non_ui_img_000080.bmp')
-        non_ui_img1 = cv.imread('tmp/rec6/non_ui_img_000081.bmp')
-        with timer_ms() as elapsed:
-            ij0, ij1, m0, m1, g1, g2 = match_grid_nodes(non_ui_img, non_ui_img1, np.array((11, 5)))
-            if ij0 is None and ij1 is None:
-                fail('no match')
-            p00, p01 = m0[*ij0], m0[*(ij0 + (1,1))]
-            p10, p11 = m1[*ij1], m1[*(ij1 + (1,1))]
-            logging.info(f'{p00},{p01}')
-            cv.rectangle(non_ui_img, p00, p01, (0,0,255), 1)
-            cv.rectangle(non_ui_img1, p10, p11, (0,0,255), 1)
-        dump_image('non_ui_img')
-        dump_image('non_ui_img1')
+    # with Snail() as s:
+    im0 = cv.imread('tmp/1/frame0_000085.bmp')
+    im1 = cv.imread('tmp/1/frame1_000085.bmp')
+    f0 = get_frame_desc(im0)
+    f1 = get_frame_desc(im1)
+    # logging.info(f'{len(f0.vl} {f0.vl} {f0.hl}')
+    with timer_ms() as elapsed:
+        ij0, ij1 = match_two_frames(f0, f1, np.array((10, 4)))
+        if ij0 is None and ij1 is None:
+            fail('no match')
+        p00, p01 = f0.grid[*ij0], f0.grid[*(ij0 + (1,1))]
+        p10, p11 = f1.grid[*ij1], f1.grid[*(ij1 + (1,1))]
+        logging.info(f'{p00},{p01}')
+        cv.rectangle(im0, p00, p01, (0,0,255), 1)
+        cv.rectangle(im1, p10, p11, (0,0,255), 1)
+    logging.info(f'elapsed {elapsed()}')
+    qweqwe = f0.image
+    dump_image('qweqwe')
+    dump_image('im0')
+    dump_image('im1')
 
-def test_extract_grid_and_match_continuous():
-    from mapar.snail import WidgetType, get_grid_rect, get_grid
-    from common import crop_image, Rect, MoveDirectionSimple, MoveDirectionComposite, MoveDirection, KeyState, wrap, get_ahk_sequence, cart_prod
-    with Snail() as s:
-        s.ensure_next_frame()
-        r, f0, f1 = s.get_widget_brects()
-        time.sleep(0.3)
-        non_ui_rect = s.non_ui_rect(r)
-        logging.info(f'non ui rect: {non_ui_rect}')
-        fb = []
-        t0 = time.time()
-        dd = set()
-        fr = s.wait_next_frame()
-        non_ui_img_prev = crop_image(fr, non_ui_rect)
-        pij = None
-        char_coords = np.array((0, 0))
-        fr = s.wait_next_frame()
-        non_ui_img = crop_image(fr, non_ui_rect)
-        char_offs = np.array(s.get_char_coords(non_ui_img))
-        i = 0
-        fb1 = []
-        gnindex = np.array((0, 0))
-        cfidx = [0, 0, 0, 0]
-        while True:
-            t = time.time()
-            fr = s.wait_next_frame()
-
-            non_ui_img = crop_image(fr, non_ui_rect)
-            out_copy = non_ui_img.copy()
-            with timer_ms() as elapsed:
-                ij0, ij1, m0, m1, grid0, grid1 = match_grid_nodes(non_ui_img_prev, non_ui_img, pij)
-                # logging.info(f'elapsed: {elapsed()}')
-            pij = ij1
-            if ij1 is None or ij0 is None:
-                logging.info(f'no match {i} {i-1}')
-                pass
-            else:
-                p00 = m0[*ij0]
-                p10, p11 = m1[*ij1], m1[*(ij1 + (1,1))]
-                cv.rectangle(out_copy, p10, p11, (0,0,255), 1)
-                
-                vl0, hl0, mvl0, mhl0 = grid0
-                vl1, hl1, mvl1, mhl1 = grid1
-
-                char_coords_prev = char_coords
-
-
-
-                cmv1 = next(filter(lambda x: abs(x[1] - char_offs[0]) < 15, enumerate(mvl1)), None)
+"""                 cmv1 = next(filter(lambda x: abs(x[1] - char_offs[0]) < 15, enumerate(mvl1)), None)
                 cmh1 = next(filter(lambda x: abs(x[1] - char_offs[1]) < 15, enumerate(mhl1)), None)
                 if cmv1:
                     cmv0 = (cmv1[0], mvl0[cmv1[0]])
@@ -493,27 +530,441 @@ def test_extract_grid_and_match_continuous():
                             cfidx[3] = i
                             cfidx[2] = 0
                     # logging.info(f'cmh: {cmh1}') 
+ """
 
-                char_coords += (p10 - p00)
 
-                cv.circle(out_copy, char_offs + char_coords, 3, (0,0,255), 1)
-                # logging.info(f'{char_coords}')
-            fb.append(out_copy)
-            fb1.append(non_ui_img)
-            while time.time() - t < 0.05:
-                time.sleep(0.005)
-            if time.time() - t0 > 10:
+def test_xxx():
+    with overlay_client() as ovl_show_img, Snail() as s:
+        t0 = time.time()
+        im = s.wait_next_frame(s.non_ui_rect)
+        while True:
+            pim = im
+            im = s.wait_next_frame(s.non_ui_rect)
+            xim = cv.bitwise_xor(pim, im)
+            xim = (xim != (0,0,0)).astype(np.uint8) * 255
+            ovl_show_img(xim)
+            if time.time() - t0 > 20:
+                break
+            time.sleep(0.01)
+
+def test_ahk_hotkeys():
+    t0 = time.time()
+    with exit_hotkey(key='+q') as get_command:
+        while True:
+            if get_command() == 'exit':
+                break
+            if time.time() - t0 > 20:
+                break
+            time.sleep(0.01)
+            # logging.info(f'elapsed: {time.time() - t0}')
+
+def test_extract_grid_and_match_continuous():
+    with overlay_client() as ovl_show_img, Snail() as s, exit_hotkey(ahk=s.ahk) as cmd_get:
+        fb = []
+        t0 = time.time()
+        dd = set()
+        non_ui_img_prev = s.wait_next_frame(s.non_ui_rect)
+        pij = None
+        char_coords = np.array((0, 0))
+        non_ui_img = s.wait_next_frame(s.non_ui_rect)
+        char_offs = s.char_offset
+        i = 0
+        fb1 = []
+        gnindex = np.array((0, 0))
+        cfidx = [0, 0, 0, 0]
+        minc = 10000000
+        maxc = 0
+        # Scale a value from one range to another range
+        def scale_value(value, from_min, from_max, to_min, to_max):
+            return (value - from_min) * (to_max - to_min) / (from_max - from_min) + to_min
+
+        roi = Rect( *(s.char_offset - (200, 200)), 400, 400)
+        im = crop_image(non_ui_img_prev, roi)
+        edges = cv.cvtColor(cv.Canny(im, 120, 255), cv.COLOR_GRAY2BGR)
+        while True:
+            if cmd_get() == 'exit':
+                break
+            with timer_ms() as elapsed:
+                pim = im
+                im = s.wait_next_frame(roi)
+                # cv.imwrite('tmp/1/frame_{i:06d}.bmp', im)
+                # i += 1
+                fd = get_frame_desc(im)
+                # for x in fd.vl:
+                    # cv.line(im, (x, 0), (x, roi.h), (0,0,255), 1)
+                # for y in fd.hl:
+                    # cv.line(im, (0, y), (roi.w, y), (0,0,255), 1)
+                pedges = edges
+                edges = cv.cvtColor(cv.Canny(im, 150, 205), cv.COLOR_GRAY2BGR)
+                xored = cv.bitwise_xor(pim, im)
+                edges_xored = cv.bitwise_xor(pedges, edges)
+                # g = grid(fd.vl, fd.hl)
+                out = im.copy()
+
+                with timer_ms() as felapsed:
+                    for x1, x0 in zip(fd.vl[1:], fd.vl[:-1]):
+                        for y1, y0 in zip(fd.hl[1:], fd.hl[:-1]):
+                            # assert x1-x0 == fd.width
+                            # assert y1-y0 == fd.width
+                            # logging.info(f'{x0} {x1} {y0} {y1}')
+                            # break
+                            cell = crop_image(xored, Rect.from_xyxy(x0, y0, x1, y1))
+                            
+                            cell = cv.cvtColor(cell, cv.COLOR_BGR2GRAY)
+                            nz = cv.countNonZero(cell)
+                            hc, wc, *_ = cell.shape
+                            # assert hc == wc == fd.width
+                            if nz < 0.1 * fd.grid_width * fd.grid_width:
+                                
+                                cv.rectangle(out, (x0+3, y0+3), (x1-3, y1-3), (0,255,0), 1)
+                            else:
+                                pass
+                                # cv.imwrite(f'tmp/1/{x0:06d}_{y0:06d}.bmp', cell)
+                            cv.putText(out, str(nz), (x0+1, y0 + 10), 0, 0.25, (0,0,255), 1)
+                    logging.info(f'felapsed: {felapsed()}')
+                    
+                logging.info(f'elapsed: {elapsed()}')
+                composite_out = np.concatenate((out, edges, xored), axis=1)
+                ovl_show_img(composite_out)
+            time.sleep(0.030)
+            if time.time() - t0 > 1000:
                 break
             non_ui_img_prev = non_ui_img
             i += 1
-        logging.info(f'gnindex: {gnindex}')
-        logging.info(f'write frames to disk')
-        for i, f in enumerate(fb):
-            cv.imwrite(f'tmp/rec6/out_copy_{i:06d}.bmp', f)
-        for i, f in enumerate(fb1):
-            cv.imwrite(f'tmp/rec6/non_ui_img_{i:06d}.bmp', f)
-            # dump_image('f', f'_non_ui_img_{i:06d}')
+        logging.info(f'maxcontrast: {maxc}, mincontrast: {minc}')
 
+
+@dataclass
+class cell_desc:
+    coord: np.ndarray
+    img: np.ndarray
+    anim: bool
+
+def is_char_moving(frame0: frame_desc, frame1: frame_desc) -> bool:
+    xored = cv.bitwise_xor(frame0.image, frame1.image)
+    nz = np.count_nonzero(xored == (0, 0, 0))
+    h, w, *_ = frame0.image.shape
+    return nz / (w * h) > 0.95
+
+@dataclass
+class world_map:
+    cell_map: dict
+    top_left: np.ndarray
+    explored: np.ndarray
+
+    def qwaqwa():
+        pass 
+
+def explore(pframe: frame_desc, frame: frame_desc):
+    # starting position is (0, 0)
+    # mark all surroundings
+    # if too close to the edge add current screen to the map
+    xored = np.bitwise_xor(frame.image, pframe.image)
+
+    
+    pass
+
+def get_char_cell(frame1: frame_desc, char_offs: point2d) -> point2d:
+    gw = len(frame1.vl)
+    gh = len(frame1.hl)
+    ij = [0, 0]
+    if frame1.vl[gw // 2 - 2] <= char_offs.xy[0] < frame1.vl[gw // 2 - 1]:
+        ij[0] = gw // 2 - 2
+    elif frame1.vl[gw // 2 - 1] <= char_offs.xy[0] < frame1.vl[gw // 2]:
+        ij[0] = gw // 2 - 1
+    else:
+        ij[0] = gw // 2
+    if frame1.hl[gh // 2 - 2] <= char_offs.xy[1] < frame1.hl[gh // 2 - 1]:
+        ij[1] = gh // 2 - 2
+    elif frame1.hl[gh // 2 - 1] <= char_offs.xy[1] < frame1.hl[gh // 2]:
+        ij[1] = gh // 2 - 1
+    else:
+        ij[1] = gh // 2
+    return ij
+    # return point2d.fromxy(frame1.vl[ij[0]], frame1.hl[ij[1]])
+
+def test_get_player_cell_loc():
+    with overlay_client() as ovl_show_img, Snail() as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
+        timeout(100) as is_not_timeout:
+        frame_size = 600
+        frame_mid_point = point2d.fromxy(frame_size // 2, frame_size // 2)
+        roi = Rect( *(s.char_offset - frame_mid_point()), frame_size, frame_size)
+        im = s.wait_next_frame(roi)
+        frame1 = get_frame_desc(im)
+        w = frame1.grid_width
+        i = 0
+        # assert w == 32
+        char_offs = frame_mid_point
+        while is_not_timeout():
+            if cmd_get() == 'exit':
+                break
+            with timer_ms() as elapsed:
+                frame0 = frame1
+                im = s.wait_next_frame(roi)
+                frame1 = get_frame_desc(im)
+                overlay = np.zeros_like(frame1.image)
+                # p = np.array(frame1.grid[*(10, 10)])
+                gw = len(frame1.vl)
+                gh = len(frame1.hl)
+                ij = get_char_cell(frame1, char_offs)
+                p = frame1.grid[*ij]
+                
+                cv.rectangle(overlay, p, p + [w, w], (255, 0, 0), -1)
+                out_img = frame1.image.copy()
+                # cv.line(out_img, (frame1.vl[gw//2], 0), (frame1.vl[gw//2],frame_size), (255,255,255), 1)
+                # cv.line(out_img, (frame1.vl[gw//2-1], 0), (frame1.vl[gw//2-1],frame_size), (255,255,255), 1)
+                # cv.line(out_img, (0, frame1.hl[gh//2]), (frame_size, frame1.hl[gh//2]), (255,255,255), 1)
+                # cv.line(out_img, (0, frame1.hl[gh//2-1]), (frame_size, frame1.hl[gh//2-1]), (255,255,255), 1)
+                 
+                cv.line(out_img, (frame_size//2, 0), (frame_size//2,frame_size), (0,255,0), 1)
+                cv.line(out_img, (0, frame_size//2), (frame_size, frame_size//2), (0,255,0), 1)
+                # cv.circle(out_img, s.char_offset, 3, (255, 255, 255), 1)
+                mixin(out_img, overlay, 0.7)
+                # out_img = cv.addWeighted(out_img, 0.7, overlay, 0.3, 0, out_img)
+                composite_out = hstack([out_img])
+                ovl_show_img(composite_out)
+            time.sleep(0.010)
+            i += 1
+
+
+@contextlib.contextmanager
+def track_dist(l, nzc_threshold = 0.1, grid_size = 32):
+    ''' keeps track of animated cells, only update if character offset is larger than l
+    animation mask for a cell with coordinates P contains 255 if that cell does not have
+    animated portions, in other words it is static, 0 otherwise 
+    '''
+    prev_char_coords = cell_loc(None)
+    map_size = 2048
+    ani_map = np.zeros(shape=(map_size, map_size), dtype=np.uint8)
+    mp = np.zeros(shape=(map_size * grid_size, map_size * grid_size), dtype=np.uint8)
+    h, w, *_ = mp.shape
+    midp_mp = np.array((h//2, w//2)) 
+    h, w, *_ = ani_map.shape
+    midp = point2d.fromxy(h//2, w//2)
+    # t = frame_mid_point() // w
+    st = [[0, 0], [0, -1], [1, 0], [1, -1], [-1, 0], [-1, -1], [-1, -2], [0, -2], [2, 0], [2, -1]]
+    # st = list(map(lambda x: t + x, st))
+ 
+    def g(f0: frame_desc, f1: frame_desc, char_coords: cell_loc):
+        ''' f0, f1 -- consecutive frames
+        char_coords -- character coordinates in cells (char_coordinates // cell_width)
+        '''
+        nonlocal prev_char_coords
+        if prev_char_coords() is None:
+            dist = 10 ** 10
+        else:
+            dist = np.linalg.norm(prev_char_coords.xy - char_coords.xy)
+            # logging.info(f'{char_coords.xy} / {prev_char_coords.xy} / {dist} / {prev_char_coords.xy - char_coords.xy}')
+        if dist > l:
+            xored = np.bitwise_xor(f0.image, f1.image)
+            mask = np.all(xored != [0, 0, 0], axis=-1).astype(np.uint8) * 255
+            # logging.info(f'mask shape {mask.shape}')
+            # dump_image('xored')
+            # dump_image('mask')
+            # xored_gray = cv.cvtColor(xored, cv.COLOR_BGR2GRAY)
+            nz = np.count_nonzero(mask)
+            h, w, *_ = xored.shape
+            cc_ij = point2d.fromxy(*get_char_cell(f1, point2d.fromxy(w//2, h//2)))
+            t = np.array((w // 2, h // 2)) // f1.grid_width
+            t = set(map(lambda x: tuple(t + x), st))
+            if f0.vl != f1.vl or f0.hl != f1.hl:
+                return False
+            fm = np.zeros(shape=(len(f1.hl), len(f1.vl)), dtype=np.uint8)
+            w = f1.grid_width
+            im = f1.image.copy()
+            canvas = np.zeros_like(im)
+            logging.info(f'update ani map {prev_char_coords()} {char_coords()}')
+            for ix, x in enumerate(f1.vl[:-1]):
+                for iy, y in enumerate(f1.hl[:-1]):
+                    if (ix, iy) in t:
+                        continue
+                    cell = get_cell_at(mask, np.array((x, y)), w)
+                    nz = np.count_nonzero(cell)
+                    # logging.info(f'{nz}')
+                    fm[iy][ix] = 255 if nz > nzc_threshold * w * w else 0
+                    # if fm[iy][ix] == 255:
+                        # cv.rectangle(tmp, (x+5, y+5), (x + w - 6, y + w - 6), (255,0,0), 1, cv.LINE_4)
+                    cell_coords = point2d.fromxy(iy, ix)
+                    ani_map[*(midp() - cc_ij(True) + cell_coords() + char_coords(True))] |= 255 if nz > nzc_threshold * w * w else 0
+                    c1 = get_cell_at(f1.image, np.array((x, y)), w)
+                    c1 = cv.cvtColor(c1, cv.COLOR_BGR2GRAY)
+                    p = midp_mp + (cell_coords() + char_coords(True) - cc_ij(True)) * w
+                    # logging.info(f'qwe {p}')
+                    mp[p[0]:p[0]+w, p[1]:p[1]+w] = c1[:,:]
+                    if nz > nzc_threshold * w * w:
+                        p = f1.grid[*(ix, iy)]
+                        cv2.rectangle(canvas, p, p + [w,w], (128,128,128), -1)
+            for _t in t:
+                p = f1.grid[*_t]
+                cv2.rectangle(canvas, p, p + [w,w], (128,128,0), -1)
+            im = cv.addWeighted(im, 0.7, canvas, 0.3, 0, im)
+            char_loc_str = f'{char_coords.xy} / {prev_char_coords.xy}'
+            cv.putText(im, char_loc_str, np.array((10,80)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), thickness=4, lineType=cv.LINE_AA)
+            cv.putText(im, char_loc_str, np.array((10,80)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), thickness=1, lineType=cv.LINE_AA)
+             
+            # outt = hstack([im, mask])
+            # dump_image('outt', f'_outt_{-char_coords.xy[0]:+03d}_{-char_coords.xy[1]:+03d}')
+            # dump_image('fm', f'_fm_{char_coords.xy[0]:03d}_{char_coords.xy[1]:03d}')
+            # dump_image('ani_map')
+            # logging.info('qweqweqwe')
+            prev_char_coords.xy = char_coords.xy
+            return True
+        return False
+    def get_ani_map():
+        return ani_map, mp
+    yield g, get_ani_map
+
+def test_get_char_anim_cells():
+    with overlay_client() as ovl_show_img, Snail() as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
+         track_dist(5) as (tr, get_ani_map):
+        frame_size = 400
+        frame_mid_point = point2d.fromxy(frame_size // 2, frame_size // 2)
+        roi = Rect( *(s.char_offset - frame_mid_point()), frame_size, frame_size)
+        im = s.wait_next_frame(roi)
+        frame = get_frame_desc(im)
+        w = frame.grid_width
+        w * w
+        character_offset = cell_loc.from_char_loc(point2d.fromxy(0, 0), w)
+        
+        while True:
+            if cmd_get() == 'exit':
+                break
+            im = s.wait_next_frame(roi)
+            pframe = frame
+            frame = get_frame_desc(im)
+            # assert pframe.vl == frame.vl and pframe.hl == frame.hl
+            # mark
+            # select cell candidates
+            tr(pframe, frame, character_offset)
+            ani_map = get_ani_map()
+            out = hstack((im, ani_map))
+            ovl_show_img(out)
+            time.sleep(0.010)
+
+def test_extract_grid_and_match_continuous1():
+    with overlay_client() as ovl_show_img, Snail() as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
+         track_dist(3.0) as (tr, get_ani_map), timeout(100) as is_not_timeout:
+        char_loc = point2d.fromxy(0, 0)
+
+        frame_size = 600
+        frame_mid_point = point2d.fromxy(frame_size // 2, frame_size // 2)
+        roi = Rect( *(s.char_offset - frame_mid_point()), frame_size, frame_size)
+        im = s.wait_next_frame(roi)
+        frame1 = get_frame_desc(im)
+        w = frame1.grid_width
+        # default zoom level (F9)
+        assert w == 32
+        mcellw = 1024
+        assert mcellw == 1024
+        ij0 = ij1 = None
+        i = 0
+        t = frame_mid_point() // w
+        st = [[0, 0], [0, -1], [1, 0], [1, -1], [-1, 0], [-1, -1], [-1, -2], [0, -2], [2, 0], [2, -1]]
+        st = list(map(lambda x: t + x, st))
+        char_loc_cell = point2d.fromxy(0, 0)
+        char_loc_mcell = point2d.fromxy(0, 0)
+        midpoint = np.array(roi.wh()) // 2
+        ij = get_char_cell(frame1, point2d.fromxy(*midpoint))
+        p = frame1.grid[*ij]
+        char_loc = point2d.fromxy(*(midpoint - p))
+        canvas = np.zeros_like(im)
+        while is_not_timeout():
+            if cmd_get() == 'exit':
+                break
+            with timer_ms() as elapsed:
+                frame0 = frame1
+                im = s.wait_next_frame(roi)
+                frame1 = get_frame_desc(im)
+                ani_map, *_ = get_ani_map()
+                
+                # check if we crossed major line
+                mcellx_changed = False
+                mcelly_changed = False
+                if frame1.mvl and frame0.mvl:
+                    mvli = get_closest(frame1.mvl, frame_mid_point.xy[0])
+                    if abs(frame1.mvl[mvli] - frame_mid_point.xy[0]) < w:
+                        if frame0.mvl[mvli] < frame_mid_point.xy[0] <= frame1.mvl[mvli]:
+                            mcellx_changed = True
+                            xdir = False
+                            char_loc_mcell.xy[0] -= 1
+                        elif frame1.mvl[mvli] < frame_mid_point.xy[0] <= frame0.mvl[mvli]:
+                            mcellx_changed = True
+                            xdir = True
+                            char_loc_mcell.xy[0] += 1
+                if frame1.mhl and frame0.mhl:
+                    mhli = get_closest(frame1.mhl, frame_mid_point.xy[1])
+                    if abs(frame1.mhl[mhli] - frame_mid_point.xy[1]) < w:
+                        if frame0.mhl[mhli] < frame_mid_point.xy[1] <= frame1.mhl[mhli]:
+                            mcelly_changed = True
+                            ydir = False
+                            char_loc_mcell.xy[1] -= 1
+                        elif frame1.mhl[mhli] < frame_mid_point.xy[1] <= frame0.mhl[mhli]:
+                            mcelly_changed = True
+                            ydir = True
+                            char_loc_mcell.xy[1] += 1
+                 
+                
+                ij0, ij1 = match_two_frames(frame0, frame1, ani_map, ij1, i)
+                overlay = canvas.copy()
+                for _t in st:
+                    p = frame1.grid[*_t]
+                    cv2.rectangle(overlay, p, p + [w,w], (255,255,0), -1)
+                # cv.addWeighted()
+
+                if ij0 is not None and ij1 is not None:
+                    p0 = frame0.grid[*ij0]
+                    p1 = frame1.grid[*ij1]
+                    diff = p0 - p1
+                    if mcellx_changed:
+                        xofs = 0 if xdir else 1
+                        xdiff = frame1.mvl[mvli] - frame_mid_point.xy[0]
+                        char_loc.xy[0] = mcellw * (char_loc_mcell.xy[0] + xofs) + xdiff
+                    else:
+                        char_loc.xy[0] += diff[0]
+
+                    if mcelly_changed:
+                        yofs = 0 if ydir else 1
+                        ydiff = frame1.mhl[mhli] - frame_mid_point.xy[1]
+                        char_loc.xy[1] = mcellw * (char_loc_mcell.xy[1] + yofs) + ydiff
+                    else:
+                        char_loc.xy[1] += diff[1]
+                    char_loc_cell.xy = char_loc.xy // frame1.grid_width
+                else:
+                    logging.info(f'cant match {ij0} {ij1}')
+                
+                frame1.char_loc_cell.xy = char_loc_cell.xy
+                
+                # logging.info(f'info {i}')
+                tr(frame0, frame1, char_loc_cell)
+                out_img = im.copy()
+                cv.circle(out_img, frame_mid_point() - char_loc(), 5, (255, 0, 0), 2)
+                char_loc_str = f'{char_loc()} / {char_loc_cell()} / {char_loc_mcell()}'
+                cv.putText(out_img, char_loc_str, np.array((10,80)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), thickness=4, lineType=cv.LINE_AA)
+                cv.putText(out_img, char_loc_str, np.array((10,80)), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), thickness=1, lineType=cv.LINE_AA)
+                ani_map, mp = get_ani_map()
+                mixin(out_img, overlay, 0.7)
+                # out_img = cv.addWeighted(out_img, 0.7, overlay, 0.3, 0, out_img)
+                # mp = cv.resize(mp, (512,512))
+                mp_midpoint = get_midpoint(mp)
+                mp_view_wh = np.array([512, 512])
+                p0 = mp_midpoint.xy + char_loc.xy - mp_view_wh // 2
+                mp_view_rect = Rect.from_xyxy(*p0, *(p0 + mp_view_wh))
+                mp_view = crop_image(mp, mp_view_rect)
+
+                # am_view = crop_image(ani_map, map_view)
+                # mp = np.zeros_like(frame1.image)
+
+                composite_out = hstack([out_img, mp_view])
+                ovl_show_img(composite_out)
+            # need to sleep a bit, because if we call overlay api to often it will hiccup
+            # time.sleep(0.010)
+            i += 1
+        ani_map, mpmp = get_ani_map()
+        logging.info(f'map size: {mpmp.shape}')
+        mp = strip_zeros_2d(mpmp)
+        ani_map = strip_zeros_2d(ani_map)
+        dump_image('ani_map')
+        dump_image('mp')
 
 
 def test_get_grid_continuous():
@@ -760,105 +1211,24 @@ def test_benchmark_tracking_ops():
                 roi_img = crop_image(non_ui_img, roi_rect)
             logging.info(f'roi_crop_ms bench time: {elapsed() / n} ms')
 
-def test_overlay_add_markers():
-    context = zmq.Context()
-    socket = context.socket(zmq.REQ)
-    socket.connect("tcp://127.0.0.1:5124")
-    logging.info('connected')
+from overlay_client import overlay_client
 
-    import random, json
-    def generate_random_json(i):
-        marker_type = "rectangle"
-        geometry = [random.randint(0, 1000) for _ in range(4)]
-        color = [*[random.randint(0, 255) for _ in range(3)], 255]
-        data = {"name": f"rect{i}", "action": "add"}
-        json_data = {
-            "marker_type": marker_type,
-            "geometry": geometry,
-            "color": color,
-            "data": data
-        }
-        return json.dumps(json_data)
-    
-    for j in range(1):
-        for i in range(100):
-            socket.send_json(generate_random_json(i))
-            r = socket.recv_string()
-            assert r == 'Received'
-    socket.close()
-    context.term()
+def test_overlay_client_exit_expect_exception():
+    with pytest.raises(RuntimeError) as einfo:
+        with overlay_client() as send_img:
+            time.sleep(20)
+            raise RuntimeError('qweqwe')
 
-def test_overlay_remove_markers():
-    context = zmq.Context()
-    socket = context.socket(zmq.REQ)
-    socket.connect("tcp://127.0.0.1:5124")
 
-    import random, json
-    def generate_random_json(i):
-        marker_type = "rectangle"
-        geometry = [random.randint(0, 1000) for _ in range(4)]
-        color = [*[random.randint(0, 255) for _ in range(3)], 255]
-        data = {"name": f"rect{i}", "action": "remove"}
-        json_data = {
-            "marker_type": marker_type,
-            "geometry": geometry,
-            "color": color,
-            "data": data
-        }
-        return json.dumps(json_data)
-    
-    for i in range(100):
-        socket.send_json(generate_random_json(i))
-        r = socket.recv_string()
-        assert r == 'Received'
-    socket.close()
-    context.term()
-
-def test_overlay_video_feed():
-    context = zmq.Context()
-    socket = context.socket(zmq.REQ)
-    socket.connect("tcp://127.0.0.1:5124")
-
-    import random, json
-    def generate_random_json(r):
-        marker_type = "image"
-        geometry = list(r.xywh())
-        color = [0, 0, 0, 255]
-        data = {"name": "img", "action": "add_image"}
-        json_data = {
-            "marker_type": marker_type,
-            "geometry": geometry,
-            "color": color,
-            "data": data
-        }
-        return json.dumps(json_data)
-    
-    from mapar.snail import WidgetType, get_grid_rect, get_grid
-    from common import crop_image, Rect, MoveDirectionSimple, MoveDirectionComposite, MoveDirection, KeyState, wrap, get_ahk_sequence, cart_prod
-    with Snail() as s:
-        s.ensure_next_frame()
-        r, f0, f1 = s.get_widget_brects()
-        time.sleep(0.3)
-        non_ui_rect = s.non_ui_rect(r)
-        logging.info(f'non ui rect: {non_ui_rect}')
-
+def test_overlay_client_video_feed():
+    with overlay_client() as overlay_show_img, Snail() as snl:
         t0 = time.time()
         while True:
-            t = time.time()
-            fr = s.wait_next_frame()
-            non_ui_img = crop_image(fr, non_ui_rect)
-            h, w, *_ = non_ui_img.shape
-            socket.send_json(generate_random_json(Rect(0, 0, w, h)))
-            r = socket.recv_string()
-            assert r == 'Received'
-            tmp = cv.cvtColor(non_ui_img, cv.COLOR_BGR2RGB)
-            socket.send(tmp.data)
-            r = socket.recv_string()
-            assert r == 'Received'
-            if time.time() - t0 > 35:
+            img = snl.wait_next_frame(snl.non_ui_rect)
+            overlay_show_img(img)
+            if time.time() - t0 > 20:
                 break
-    socket.close()
-    context.term()
+            time.sleep(0.010)
 
 def test_explore_two_by_two_area():
     from mapar.snail import WidgetType, get_grid_rect
@@ -1027,3 +1397,232 @@ def test_explore_two_by_two_area_v2():
         for i, f in enumerate(fb):
             cv.imwrite(f'tmp/non_ui_img_{i:06d}.bmp', f)
             # dump_image('f', f'_non_ui_img_{i:06d}')
+
+
+def test_open_debug_options():
+    from mapar.snail import WidgetType
+    with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
+         hotkey_handler('^1', 'open_debug_ui') as open_debug_ui, \
+         hotkey_handler('^2', 'stop_anim') as stop_anim, \
+         track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
+        im = s.wait_next_frame()
+        out = im.copy()
+        while is_not_timeout():
+            if cmd_get() == 'exit':
+                w, h = s.window_rect.wh()
+                out = np.zeros((h, w, 3), dtype=np.uint8)
+                putOutlinedText(out, 'exiting', (100,100))
+                ovl_show_img(out)
+                break
+            if open_debug_ui() == 'open_debug_ui':
+                s.ahk.send('{F4}')
+                if s.debug_ui_rect is None:
+                    time.sleep(0.02)
+                    out = s.wait_next_frame()
+                    br, im1, im2 = s.get_widget_brects()
+                    uir = None
+                    for r in br:
+                        lbls = label_brect(r, s.window_rect)
+                        if lbls == set((UiLocation.TOP, UiLocation.LEFT)):
+                            s.debug_ui_rect = r
+                            cv.rectangle(out, r.xywh(), (0, 255,0), 1)
+                if s.debug_ui_rect is not None:
+                    uir = s.debug_ui_rect
+                    s.ahk.send('^f')
+                    s.ahk.set_clipboard('show-entity-positions')
+                    s.ahk.send('^v')
+                    time.sleep(0.01)
+                    im = s.wait_next_frame(uir)
+                    dump_image('im')
+                    im = cv.cvtColor(im, cv.COLOR_BGR2GRAY)
+                    _, mask = cv.threshold(im, 128, 255, cv.THRESH_BINARY)
+                    mask = dilate(mask, 2, cv.MORPH_RECT)
+                    ccs = get_ccs(mask, with_br=True)
+                    h, w = mask.shape
+                    p = np.array((0, h))
+                    srt = sorted(ccs, key=lambda x: np.linalg.norm(p - Rect(*x[1]).xy()))
+                    c = np.array(Rect(*srt[0][1]).center()) + uir.xy()
+                    s.ahk.click(*c)
+                    s.ahk.send('{Esc}')
+                ovl_show_img(out)
+            time.sleep(0.01)
+
+
+
+def mark_area_deconstruct_non_ghosts(s: Snail, rect: Rect):
+    s.ahk.send('9')
+    xy = np.array(rect.xy())
+    wh = np.array(rect.wh())
+    s.ahk.mouse_move(*(xy + (2, 2)))
+    s.ahk.click(button='L', direction='D')
+    s.ahk.mouse_move(*(xy+wh))
+    s.ahk.click(button='L', direction='U')
+    s.ahk.send('q')
+
+def unmark_area_deconstruct_non_ghosts(s: Snail, rect: Rect):
+    xy = np.array(rect.xy())
+    wh = np.array(rect.wh())
+    s.ahk.send('9')
+    s.ahk.mouse_move(*(xy + (2, 2)))
+    s.ahk.send('{Shift Down}')
+    s.ahk.click(button='L', direction='D')
+    s.ahk.mouse_move(*(xy+wh))
+    s.ahk.click(button='L', direction='U')
+    s.ahk.send('{Shift Up}')
+    s.ahk.send('q')
+
+def get_ghosts_locations_diff_image(s: Snail, rect: Rect):
+    s.ahk.send('0')
+    xy = np.array(rect.xy())
+    wh = np.array(rect.wh())
+    s.ahk.mouse_move(*(xy + (2, 2)))
+    s.ahk.click(button='L', direction='D')
+    s.ahk.mouse_move(*(xy+wh))
+    im1 = s.wait_next_frame(rect)
+    s.ahk.send('{Shift Down}')
+    time.sleep(0.02)
+    im2 = s.wait_next_frame(rect)
+    s.ahk.click(button='L', direction='U')
+    s.ahk.send('{Shift Up}')
+    s.ahk.send('q')
+    return im1, im2
+
+
+
+def test_get_tooltip1():
+    with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
+         hotkey_handler('^1', 'mark_ghosts') as mark_ghosts, \
+         hotkey_handler('^2', 'stop_anim') as stop_anim, \
+         track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
+        im = s.wait_next_frame()
+        # out = im.copy()
+        # out = np.zeros_like()
+        grid_width = 32
+        char_reach = 12
+        
+        if s.char_offset is not None:
+            rect = Rect.from_ptdm(np.array(s.char_offset) - np.array((grid_width, grid_width)) * char_reach, \
+                        np.array((grid_width, grid_width)) * char_reach * 2)
+        else:
+            rect = s.non_ui_rect
+
+        # out = np.zeros(shape=(*rect.wh(), 4), dtype=np.uint8)
+        # out[:,:,0] = 128
+        # out[:,:,3] = 128
+        logging.info(f'{rect}')
+
+        while is_not_timeout():
+            im = s.wait_next_frame()
+            if stop_anim() == 'stop_anim':
+                # out = im.copy()
+
+                s.ahk.send('!d')
+                xy = np.array(rect.xy())
+                wh = np.array(rect.wh())
+                s.ahk.mouse_move(*(xy + (2,2)))
+                s.ahk.mouse_drag(*(xy + (2,2) + wh))
+                time.sleep(0.5)
+                # s.ahk.mouse_move(*(xy + (2, 2)))
+                # s.ahk.click(button='L', direction='D')
+                # s.ahk.mouse_move(*(xy+wh))
+                # s.ahk.click(button='L', direction='U')
+                s.ahk.send('q')
+                bg = s.wait_next_frame(rect)
+                s.ahk.send('^z')
+                time.sleep(0.1)
+                comp = s.wait_next_frame(rect)
+                dump_image('bg')
+                dump_image('comp')
+
+                fg, fg1 = get_foreground(bg, comp)
+
+                dump_image('fg')
+                dump_image('fg1')
+                # out = cv.cvtColor(fg, cv.COLOR_RGB2BGR)
+
+
+                mark_area_deconstruct_non_ghosts(s, rect)
+                im1, im2 = get_ghosts_locations_diff_image(s, rect)
+                marks = get_marks(im1, im2)
+                dump_image('marks')
+                ents, ents1 = get_entity_coords_from_marks(marks, im1, grid_color=(32,32,32))
+
+                logging.info(ents1)
+
+
+                vl, hl, mvl, mhl, gcw = get_grid(comp, grid_color=(32,32,32))
+
+                map_c_to_e = get_cell_to_entity_map(ents1)
+                bmap = get_belt_map(vl, hl, gcw, map_c_to_e, fg)
+
+
+                strmap = '\n'.join([''.join(row.tolist()) for row in bmap])
+                logging.info(strmap)
+                # g = get_strmap_to_grid(strmap)
+                # paths = strmap_to_paths(strmap)
+                graph = build_graph_from_map(strmap)
+                paths = find_all_paths(graph)
+                cpaths = collapse_paths(strmap, paths)
+                
+                gr = grid(vl, hl)
+                n0 = gr[*(0,0)]
+
+                s.ahk.mouse_move(*(np.array([n0[0], n0[1]]) + rect.xy()), speed=5)
+                for path in cpaths:
+                    # there's no need to inverse order of x, y coordinates
+                    pt = path[0]
+                    pt = [pt[1], pt[0]]
+                    xy = gr[*pt]
+                    s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=1)
+                    s.ahk.send('q')
+                    time.sleep(0.05)
+                    s.ahk.click(button='L', direction='D')
+                    time.sleep(0.05)
+                    pt = path[1]
+                    pt = [pt[1], pt[0]]
+                    xy = gr[*pt]
+                    s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=1)
+                    time.sleep(0.05)
+
+                    for pt in path[2:]:
+                        pt = [pt[1], pt[0]]
+                        xy = gr[*pt]
+                        s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=1)
+                        s.ahk.send('r')
+                        time.sleep(0.05)
+                    s.ahk.click(button='L', direction='U')
+                    s.ahk.send('q')
+                logging.info(cpaths)
+
+
+                """
+                for e in ents:
+                    # cv.rectangle(out, (*(e - (5,5)), 10, 10), (255,255,0), 1)
+                    s.ahk.mouse_move(*(e + rect.xy()), speed=0)
+                    s.ahk.send('q')
+                    s.ahk.click()
+                    s.ahk.send('q')
+                time.sleep(0.5)
+                """
+                # unmark_area_deconstruct_non_ghosts(s, rect)
+            if cmd_get() == 'exit':
+                break
+            # with timer_ms() as elapsed:
+            # ovl_show_img(out)
+            time.sleep(0.010)
+
+
+
+def test_full_screen():
+    with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, \
+         exit_hotkey(ahk=s.ahk) as cmd_get, \
+         timeout(1000) as is_not_timeout:
+        im = s.wait_next_frame()
+        out = im.copy()
+        while is_not_timeout():
+            im = s.wait_next_frame()
+            if cmd_get() == 'exit':
+                break
+            time.sleep(0.010)
+
+
