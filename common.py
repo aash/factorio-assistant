@@ -379,7 +379,22 @@ def entity_pos(im, mark_size = 14):
         ents.append(r.center())
     return ents
 
-def get_grid(im, threshold = 100, grid_color = (0,0,0)):
+def get_grid_color(gr: np.ndarray) -> np.ndarray:
+    gr_arr = crop_image(gr, Rect(0,0,100,100))
+    reshaped_array = gr_arr.reshape(-1, gr_arr.shape[-1])
+    unique_colors, counts = np.unique(reshaped_array, axis=0, return_counts=True)
+    color_counts_dict = {tuple(color): count for color, count in zip(unique_colors, counts)}
+    itms = color_counts_dict.items()
+    itms = sorted(itms, key=lambda x: x[1])
+    return np.array(itms[-1][0])
+
+def get_grid(im, threshold = 100, grid_color = None):
+
+    if grid_color is None:
+        grid_color = get_grid_color(im)
+
+    assert grid_color is not None
+
     def get_trilples(lst):
         triples = []
         if len(lst) >= 3:
@@ -415,7 +430,6 @@ def get_grid(im, threshold = 100, grid_color = (0,0,0)):
     out = im
     h, w, *_ = out.shape
     out = cv.inRange(out, grid_color, grid_color)
-    # cv.imwrite('grid.png', out)
     r = []
     for ax, mx in zip([0, 1], [h, w]):
         s = np.sum(out/255, axis=ax)
@@ -423,24 +437,15 @@ def get_grid(im, threshold = 100, grid_color = (0,0,0)):
         l, ml = filter_triples(lines)
         r.append((l, ml))
     
-    # get lengths between consequtive grid lines
-    # logging.info(f'vl: {r[0][0]}\nhl: {r[1][0]}')
     vdiffs = get_diffs(r[0][0])
     hdiffs = get_diffs(r[1][0])
     # most probable grid size
-    # logging.info(f'vdiffs: {vdiffs}\nhdiffs: {hdiffs}')
     grid_size = get_most_frequent_value(vdiffs + hdiffs)
     # find the most probable starting point
     vstart = find_a_for_max_count(np.array(r[0][0]), grid_size)
     hstart = find_a_for_max_count(np.array(r[1][0]), grid_size)
     vn = list(range(vstart, w, grid_size))
     hn = list(range(hstart, h, grid_size))
-
-    # logging.info(f'vstart: {vstart}, hstart: {hstart}, grid_size: {grid_size}')
-    # logging.info(f'vn: {vn}\nhn: {hn}')
-
-
-
     return vn, hn, r[0][1], r[1][1], grid_size
 
 
