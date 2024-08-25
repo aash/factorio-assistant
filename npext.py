@@ -71,3 +71,18 @@ def nz_mask() -> Callable[[npext], npext]:
         return npext(msk)
     return operation
     
+def bgr2rgb() -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        arr = ext.array
+        assert arr.ndim == 3
+        out = cv.cvtColor(arr, cv.COLOR_BGR2RGB)
+        return npext(out)
+    return operation
+
+def gray2rgb() -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        arr = ext.array
+        assert arr.ndim == 2
+        out = cv.cvtColor(arr, cv.COLOR_GRAY2RGB)
+        return npext(out)
+    return operation
