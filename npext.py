@@ -86,3 +86,15 @@ def gray2rgb() -> Callable[[npext], npext]:
         out = cv.cvtColor(arr, cv.COLOR_GRAY2RGB)
         return npext(out)
     return operation
+
+def posterize(level: int, preserve_black: bool = True) -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        image = ext.array
+        assert image.ndim == 3
+        step = 256 // max(2, level)
+        posterized_img = (image // step) * step + step // 2
+        if preserve_black:
+            black_mask = np.all(image == [0, 0, 0], axis=-1)
+            posterized_img[black_mask] = [0, 0, 0]
+        return npext(posterized_img)
+    return operation
