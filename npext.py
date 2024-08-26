@@ -52,7 +52,7 @@ def crop(r: Rect) -> Callable[[npext], npext]:
         return npext(arr)
     return operation
 
-def nz(r: Rect) -> Callable[[npext], npext]:
+def nz() -> Callable[[npext], npext]:
     def operation(ext: npext) -> npext:
         arr = ext.array
         arr = np.count_nonzero(arr)
@@ -63,9 +63,9 @@ def nz_mask() -> Callable[[npext], npext]:
     def operation(ext: npext) -> npext:
         arr = ext.array
         if arr.ndim == 3:
-            msk = ((arr != (0, 0, 0)) * 255).astype(np.uint8)
+            msk = np.where(np.any(arr != (0, 0, 0), axis=-1), 255, 0).astype(np.uint8)
         elif arr.ndim == 2:
-            msk = ((arr != 0) * 255).astype(np.uint8)
+            msk = np.where(np.any(arr != 0, axis=-1), 255, 0).astype(np.uint8)
         else:
             raise RuntimeError('unexpected number of dimensions')
         return npext(msk)
