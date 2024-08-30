@@ -98,3 +98,40 @@ def posterize(level: int, preserve_black: bool = True) -> Callable[[npext], npex
             posterized_img[black_mask] = [0, 0, 0]
         return npext(posterized_img)
     return operation
+
+def bitwise_xor(other: npext) -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        return npext(cv.bitwise_xor(ext.array, other.array))
+    return operation
+
+def apply_mask(mask: npext) -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        return npext(cv.bitwise_or(ext.array, ext.array, mask=mask.array))
+    return operation
+
+def dilate(el, sz, it=1) -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        cross_kernel = cv.getStructuringElement(el, (sz, sz))
+        return npext(cv.dilate(ext.array, cross_kernel, iterations=it))
+    return operation
+
+def erode(el, sz, it=1) -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        cross_kernel = cv.getStructuringElement(el, (sz, sz))
+        return npext(cv.erode(ext.array, cross_kernel, iterations=it))
+    return operation
+
+def gaussian_blur(sz) -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        return npext(cv.GaussianBlur(ext.array, (sz,sz), 0, 0))
+    return operation
+
+def to_float32() -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        return npext(ext.array.astype(np.float32))
+    return operation
+
+def to_uint8() -> Callable[[npext], npext]:
+    def operation(ext: npext) -> npext:
+        return npext(ext.array.astype(np.uint8))
+    return operation
