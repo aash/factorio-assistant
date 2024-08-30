@@ -32,24 +32,44 @@ def millis_now():
     return int(time.time() * 1000)
 
 
-def dump_image(img_var_name: str, postfix: str = None):
+def dump_images(img_var_names: List[str] | str, image_format: str = 'bmp', postfix: str = None):
+    if type(img_var_names) == str:
+        img_var_names = list(map(str.strip, img_var_names.split(',')))
+
+    
+    for var_name in img_var_names:
+        dump_image(var_name, image_format, postfix)
+
+def dump_image(img_var_name: str, image_format:str = 'bmp', postfix: str = None):
     assert type(img_var_name) == str
+    assert image_format in ['bmp', 'png', 'jpg', 'jpeg']
     caller_frame = inspect.currentframe().f_back
     caller_name = caller_frame.f_code.co_name
-    caller_locals = caller_frame.f_locals
+    if caller_name == 'dump_images':
+        caller_name = inspect.currentframe().f_back.f_back.f_code.co_name
+        caller_locals = caller_frame.f_back.f_locals
+    else:
+        caller_locals = caller_frame.f_locals
     assert img_var_name in caller_locals
     img = caller_locals[img_var_name]
-
-    # if swap_br is None:
-    #     if img.shape[2] == 4:
-    #         swap_br = False
-    #     if img.shape[2] == 3:
-    #         swap_br = True
-    # if type(swap_br) is bool and swap_br:
-    #     img = cv.cvtColor(img, cv.COLOR_BGR2RGB)
     if not postfix:
-        postfix = f'_{img_var_name}'
-    cv.imwrite(f'tmp/{caller_name}{postfix}.bmp', img)
+        postfix = f'{img_var_name}'
+    else:
+        postfix = f'{img_var_name}_{postfix}'
+    if type(img) == np.ndarray:
+        cv.imwrite(f'tmp/{caller_name}_{postfix}.{image_format}', img)
+    elif type(img) == npext:
+        cv.imwrite(f'tmp/{caller_name}_{postfix}.{image_format}', img.array)
+    else:
+        raise RuntimeError(f'unexpected type of variable: type({img_var_name}) == {type(img)}')
+
+def clear_images():
+    import os, glob
+    caller_frame = inspect.currentframe().f_back
+    caller_name = caller_frame.f_code.co_name
+    for fn in glob.glob(f'tmp/{caller_name}*'):
+        os.remove(fn)
+    
 
 @pytest.mark.skip('outdated')
 def test_can_run_and_stop_dxgi_capture_binary():
@@ -1447,58 +1467,146 @@ def test_open_debug_options():
                 ovl_show_img(out)
             time.sleep(0.01)
 
-
-
-def mark_area_deconstruct_non_ghosts(s: Snail, rect: Rect):
-    s.ahk.send('9')
-    xy = np.array(rect.xy())
-    wh = np.array(rect.wh())
-    s.ahk.mouse_move(*(xy + (2, 2)))
+def mouse_drag(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_time: float = 0.01):
+    xy, wh = np.array(rect.xy()), np.array(rect.wh())
+    s.ahk.mouse_move(*xy, speed=mouse_spd)
     s.ahk.click(button='L', direction='D')
-    s.ahk.mouse_move(*(xy+wh))
+    time.sleep(sleep_time)
+    s.ahk.mouse_move(*(xy+wh), speed=mouse_spd)
     s.ahk.click(button='L', direction='U')
-    s.ahk.send('q')
 
-def unmark_area_deconstruct_non_ghosts(s: Snail, rect: Rect):
-    xy = np.array(rect.xy())
-    wh = np.array(rect.wh())
-    s.ahk.send('9')
-    s.ahk.mouse_move(*(xy + (2, 2)))
-    s.ahk.send('{Shift Down}')
+''' select non-ghosts for decustruction, this way we disable animation
+    so on consecutive frames it can be cancelled by xoring two images
+'''
+def mark_area_deconstruct_non_ghosts(s: Snail, rect: Rect, mouse_spd=0, sleep_duration: float = 0.05):
+    # select deconstruct non-ghosts tool
+    with tool_selector(s, tool='9', sleep_duration=sleep_duration):
+        mouse_drag(s, rect, mouse_spd, sleep_time=sleep_duration)
+
+from contextlib import contextmanager
+
+@contextmanager
+def tool_selector(s: Snail, tool: str | List[str], tool_reset: str | List[str] = 'q', sleep_duration: float = 0.05):
+    # TODO: add translation tool to specific key presses
+    logging.info('tool select')
+    if type(tool) == list:
+        for t in tool:
+            logging.info(f'sending keypress {t}')
+            s.ahk.send(t)
+            time.sleep(sleep_duration)
+    elif type(tool) == str:
+        logging.info(f'sending keypress {tool}')
+        s.ahk.send(tool)
+        time.sleep(sleep_duration)
+    def reset_tool():
+       pass
+    yield reset_tool
+    logging.info('tool reset')
+    if type(tool_reset) == list:
+        for t in tool_reset:
+            logging.info(f'sending keypress {t}')
+            s.ahk.send(t)
+            time.sleep(sleep_duration)
+    elif type(tool_reset) == str:
+        logging.info(f'sending keypress {tool_reset}')
+        s.ahk.send(tool_reset)
+        time.sleep(sleep_duration)
+
+@contextmanager
+def diff_frame(s: Snail, roi: Rect):
+    diff = [s.wait_next_frame(roi)]
+    logging.info('first screen')
+    def accessor():
+        return diff
+    yield accessor
+    logging.info('second screen')
+    diff.append(s.wait_next_frame(roi))
+
+@contextmanager
+def mouse_drag_release(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_time: float = 0.01):
+    def nop():
+        pass
+    xy, wh = np.array(rect.xy()), np.array(rect.wh())
+    s.ahk.mouse_move(*xy, speed=mouse_spd)
     s.ahk.click(button='L', direction='D')
-    s.ahk.mouse_move(*(xy+wh))
+    time.sleep(sleep_time)
+    s.ahk.mouse_move(*(xy+wh), speed=mouse_spd)
+    yield nop
     s.ahk.click(button='L', direction='U')
-    s.ahk.send('{Shift Up}')
-    s.ahk.send('q')
 
-def get_ghosts_locations_diff_image(s: Snail, rect: Rect):
+def unmark_area_deconstruct_non_ghosts(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_duration: float = 0.05):
+    # TODO: add tool translation, 9 is select non-ghost buildings
+    with tool_selector(s, tool=['9', '{Shift Down}'], tool_reset=['{Shift Up}', 'q'], sleep_duration=sleep_duration):
+        mouse_drag(s, rect, mouse_spd=mouse_spd, sleep_time=sleep_duration)
+
+def get_ghosts_locations_diff_image1(s: Snail, rect: Rect):
     s.ahk.send('0')
     xy = np.array(rect.xy())
     wh = np.array(rect.wh())
-    s.ahk.mouse_move(*(xy + (2, 2)))
+    s.ahk.mouse_move(*(xy + (2, 2)), speed=0)
     s.ahk.click(button='L', direction='D')
-    s.ahk.mouse_move(*(xy+wh))
+    s.ahk.mouse_move(*(xy+wh), speed=0)
+    time.sleep(0.01)
     im1 = s.wait_next_frame(rect)
     s.ahk.send('{Shift Down}')
-    time.sleep(0.02)
+    time.sleep(0.01)
     im2 = s.wait_next_frame(rect)
     s.ahk.click(button='L', direction='U')
     s.ahk.send('{Shift Up}')
     s.ahk.send('q')
-    return im1, im2
+    return npext(im1), npext(im2)
+
+def get_ghosts_locations_diff_image(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_duration: float = 0.01):
+    
+    # TODO: add tool hotkey translation
+    # select ghost deconstruct tool
+    with tool_selector(s, '0', sleep_duration=sleep_duration), \
+        mouse_drag_release(s, rect, mouse_spd=mouse_spd, sleep_time=sleep_duration):
+        with diff_frame(s, rect) as diff:
+            s.ahk.send('{Shift Down}')
+            time.sleep(sleep_duration)
+        im1, im2 = diff()
+    s.ahk.send('{Shift Up}')
+    time.sleep(sleep_duration)
+    return npext(im1), npext(im2)
+
+def get_grid_img(s: Snail, rect: Rect):
+    # shift + space is pause toggle
+    s.ahk.send('+ ')
+    time.sleep(0.05)
+    gr = s.wait_next_frame(rect)
+    s.ahk.send('+ ')
+    time.sleep(0.05)
+    return gr
+
+
+def get_plan_image(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_time: float = 0.05):
+    # deconstruct tool
+    with tool_selector(s, tool='!d', sleep_duration=sleep_time):
+        mouse_drag(s, rect, mouse_spd=mouse_spd, sleep_time=sleep_time)
+    with diff_frame(s, rect) as diff:
+        s.ahk.send('^z')
+        time.sleep(sleep_time)
+    time.sleep(sleep_time)
+    bg, comp = diff()
+    return bg, comp
 
 
 
 def test_get_tooltip1():
+    clear_images()
     with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
          hotkey_handler('^1', 'mark_ghosts') as mark_ghosts, \
-         hotkey_handler('^2', 'stop_anim') as stop_anim, \
-         track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
+         hotkey_handler('^2', 'deploy') as deploy, \
+         hotkey_handler('^3', 'snapshot') as snapshot, \
+         hotkey_handler('^4', 'grid_snapshot') as grid_snapshot, \
+        track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
         im = s.wait_next_frame()
         # out = im.copy()
         # out = np.zeros_like()
         grid_width = 32
-        char_reach = 12
+        char_reach = 15
+        debug = True
         
         if s.char_offset is not None:
             rect = Rect.from_ptdm(np.array(s.char_offset) - np.array((grid_width, grid_width)) * char_reach, \
@@ -1512,8 +1620,49 @@ def test_get_tooltip1():
         logging.info(f'{rect}')
 
         while is_not_timeout():
-            im = s.wait_next_frame()
-            if stop_anim() == 'stop_anim':
+            if grid_snapshot() == 'grid_snapshot':
+                nogr = s.wait_next_frame(rect)
+                with tool_selector(s, tool='+ ', tool_reset='+ ', sleep_duration=0.01), diff_frame(s, rect) as diff:
+                    pass
+                gr, _ = diff()
+                dump_image('gr')
+            if snapshot() =='snapshot':
+                mouse_speed = 0
+                sleep_duration = 0.05
+                gr = get_grid_img(s, rect)
+                bg, comp = get_plan_image(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                fg, fg1 = get_foreground(bg, comp)
+                mark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                im2, im1 = get_ghosts_locations_diff_image(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                im2 = im2 | bgr2rgb()
+                im1 = im1 | bgr2rgb()
+                marks = get_marks(im1, im2)
+                unmark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                dump_images('gr, bg, comp, fg, fg1, im1, im2, marks')
+                
+            if snapshot() =='snapshot1':
+                mouse_speed = 0
+                sleep_duration = 0.05
+                gr = get_grid_img(s, rect)
+                bg, comp = get_plan_image(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                fg, fg1 = get_foreground(bg, comp)
+                mark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                im2, im1 = get_ghosts_locations_diff_image(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                im2 = im2 | bgr2rgb()
+                im1 = im1 | bgr2rgb()
+                marks = get_marks(im1, im2)
+                unmark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
+                time.sleep(sleep_duration * 2)
+                dump_images('gr, bg, comp, fg, fg1, im1, im2, marks')
+                
+            if deploy() == 'deploy':
                 # out = im.copy()
 
                 s.ahk.send('!d')
@@ -1522,44 +1671,54 @@ def test_get_tooltip1():
                 s.ahk.mouse_move(*(xy + (2,2)))
                 s.ahk.mouse_drag(*(xy + (2,2) + wh))
                 time.sleep(0.5)
-                # s.ahk.mouse_move(*(xy + (2, 2)))
-                # s.ahk.click(button='L', direction='D')
-                # s.ahk.mouse_move(*(xy+wh))
-                # s.ahk.click(button='L', direction='U')
                 s.ahk.send('q')
                 bg = s.wait_next_frame(rect)
                 s.ahk.send('^z')
                 time.sleep(0.1)
                 comp = s.wait_next_frame(rect)
-                dump_image('bg')
-                dump_image('comp')
 
-                fg, fg1 = get_foreground(bg, comp)
+                if debug:
+                    dump_image('bg')
+                    dump_image('comp')
 
-                dump_image('fg')
-                dump_image('fg1')
+                fg_ = get_foreground(bg, comp)
+                fg1, fg = npext(fg_[0]), npext(fg_[1])
+                
+                if debug:
+                    dump_image('fg')
+                    dump_image('fg1')
                 # out = cv.cvtColor(fg, cv.COLOR_RGB2BGR)
 
 
                 mark_area_deconstruct_non_ghosts(s, rect)
                 im1, im2 = get_ghosts_locations_diff_image(s, rect)
                 marks = get_marks(im1, im2)
-                dump_image('marks')
-                ents, ents1 = get_entity_coords_from_marks(marks, im1, grid_color=(32,32,32))
+                if debug:
+                    dump_image('im1')
+                    dump_image('im2')
+                    dump_image('marks')
+
+                grid_img = get_grid_img(s, rect)
+
+                vl, hl, mvl, mhl, gcw = get_grid(grid_img)
+                if debug:
+                    dump_image('grid_img')
+
+                ents, ents1 = get_entity_coords_from_marks(marks, vl, hl, gcw)
 
                 logging.info(ents1)
 
 
-                vl, hl, mvl, mhl, gcw = get_grid(comp, grid_color=(32,32,32))
 
-                map_c_to_e = get_cell_to_entity_map(ents1)
-                bmap = get_belt_map(vl, hl, gcw, map_c_to_e, fg)
+                
+
+                
+                map_c2e = get_cell_to_entity_map(ents1)
+                bmap = get_belt_map(vl, hl, gcw, map_c2e, fg)
 
 
                 strmap = '\n'.join([''.join(row.tolist()) for row in bmap])
                 logging.info(strmap)
-                # g = get_strmap_to_grid(strmap)
-                # paths = strmap_to_paths(strmap)
                 graph = build_graph_from_map(strmap)
                 paths = find_all_paths(graph)
                 cpaths = collapse_paths(strmap, paths)
@@ -1567,6 +1726,24 @@ def test_get_tooltip1():
                 gr = grid(vl, hl)
                 n0 = gr[*(0,0)]
 
+
+                fg1 = fg | posterize(5)
+                vl, hl, mvl, mhl, cell_width = get_grid(gr.array)
+                grd = grid(vl, hl)
+                mrks = get_marks(bg, mrks)
+                ents, ents1 = get_entity_coords_from_marks(mrks.array, vl, hl, cell_width)
+                map_c2e = get_cell_to_entity_map(ents1)
+                bmap = get_belt_map(vl, hl, cell_width, map_c2e, fg1.array)
+                dd = get_similarity_test_cache(grd, fg.array, bmap, map_c2e)
+                cc = get_classes(dd)
+                is_belt = is_belt_pred(bmap)
+                is_entity = is_entity_pred(map_c2e)
+                cls_map = dict()
+                for grid_cell in iter_grid_cells(grd, fg.array, [is_entity, is_partial_cell, is_nz_mask_low, is_belt]):
+                    ij, p = tuple(grid_cell.idx), grid_cell.loc
+                    cls_map[ij] = get_image_class(dd, ij, cc)
+
+                '''
                 s.ahk.mouse_move(*(np.array([n0[0], n0[1]]) + rect.xy()), speed=5)
                 for path in cpaths:
                     # there's no need to inverse order of x, y coordinates
@@ -1593,7 +1770,7 @@ def test_get_tooltip1():
                     s.ahk.click(button='L', direction='U')
                     s.ahk.send('q')
                 logging.info(cpaths)
-
+                '''
 
                 """
                 for e in ents:
