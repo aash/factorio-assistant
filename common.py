@@ -1,7 +1,7 @@
 import numpy as np
 import cv2 as cv
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple
 from copy import deepcopy
 import time
@@ -14,6 +14,9 @@ import win32api
 from sklearn.cluster import KMeans
 from npext import *
 from graphics import *
+from typing import List, Callable, Generator, Set
+import numpy.typing as npt
+from collections import defaultdict
 
 class DataObject:
     def __init__(self, data_dict):
@@ -81,11 +84,12 @@ def label_brect(rect: Rect, window: Rect, threshold: int = 1):
         lbls.add(UiLocation.HCENTER)
     return lbls
 
-def erode(img: np.ndarray, sz: int, shape):
+def erode_(img: np.ndarray, sz: int, shape):
     el = cv.getStructuringElement(shape, (2 * sz + 1, 2 * sz + 1), (sz, sz))
     return cv.erode(img, el)
 
-def dilate(img: np.ndarray, sz: int, shape):
+def dilate_(img: np.ndarray, sz: int, shape):
+    
     el = cv.getStructuringElement(shape, (2 * sz + 1, 2 * sz + 1), (sz, sz))
     return cv.dilate(img, el)
 
@@ -218,6 +222,16 @@ def hstack(imgs):
         img = np.vstack((img, np.zeros((maxh - img.shape[0], img.shape[1], img.shape[2]), dtype=img.dtype)))
         out_imgs.append(img)
     return np.hstack(out_imgs)
+
+def vstack(imgs):
+    maxv = max([i.shape[1] for i in imgs])
+    out_imgs = []
+    for img in imgs:
+        if len(img.shape) == 2 or img.shape[2] == 1:
+            img = cv.cvtColor(img, cv.COLOR_GRAY2BGR)
+        img = np.hstack((img, np.zeros((img.shape[0], maxv - img.shape[1], img.shape[2]), dtype=img.dtype)))
+        out_imgs.append(img)
+    return np.vstack(out_imgs)
 
 
 @contextlib.contextmanager
@@ -379,14 +393,27 @@ def entity_pos(im, mark_size = 14):
         ents.append(r.center())
     return ents
 
-def get_grid_color(gr: np.ndarray) -> np.ndarray:
-    gr_arr = crop_image(gr, Rect(0,0,100,100))
+def get_colors_dict(gr_arr: np.ndarray):
     reshaped_array = gr_arr.reshape(-1, gr_arr.shape[-1])
     unique_colors, counts = np.unique(reshaped_array, axis=0, return_counts=True)
     color_counts_dict = {tuple(color): count for color, count in zip(unique_colors, counts)}
+    return color_counts_dict
+
+def get_grid_color(gr: np.ndarray) -> np.ndarray:
+    gr_arr = crop_image(gr, Rect(0,0,100,100))
+    color_counts_dict = get_colors_dict(gr_arr)
     itms = color_counts_dict.items()
-    itms = sorted(itms, key=lambda x: x[1])
-    return np.array(itms[-1][0])
+    itms = sorted(itms, key=lambda x: x[1], reverse=True)
+    f = filter(lambda x: x[0][0] == x[0][1] == x[0][2], itms[:10])
+    return np.array(next(f)[0])
+
+@dataclass
+class Grid:
+    vl: np.ndarray
+    hl: np.ndarray
+    mvl: np.ndarray
+    mhl: np.ndarray
+    cell_width: int
 
 def get_grid(im, threshold = 100, grid_color = None):
 
@@ -430,6 +457,7 @@ def get_grid(im, threshold = 100, grid_color = None):
     out = im
     h, w, *_ = out.shape
     out = cv.inRange(out, grid_color, grid_color)
+
     r = []
     for ax, mx in zip([0, 1], [h, w]):
         s = np.sum(out/255, axis=ax)
@@ -488,12 +516,12 @@ def detect_mark_direction(cell) -> MarkDirection:
 def get_marks(im1, im2):
     r = cv.bitwise_xor(im1, im2)
     r = cv.cvtColor(r, cv.COLOR_BGR2GRAY)
-    _, r = cv.threshold(r, 0, 255, cv.THRESH_BINARY)
+    _, r = cv.threshold(r, 10, 255, cv.THRESH_BINARY)
     h, w = r.shape
     cv.rectangle(r, (0,0), (w, h), 0, 5)
-    i = 1
-    cross_kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3))
-    r = cv.erode(r, cross_kernel, iterations=i)
+    # i = 1
+    # cross_kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3))
+    # r = cv.erode(r, cross_kernel, iterations=i)
     # lab_img = cv.cvtColor(im1, cv.COLOR_BGR2LAB)
     # lower_red = np.array([20, 150, 150])  # Example values for lower bound
     # upper_red = np.array([255, 255, 255])  # Example values for upper bound
@@ -529,13 +557,16 @@ def get_ccs(img, with_br:bool = False):
 
 @dataclass
 class entity:
+    # def __init__():
+        
     top_left: np.ndarray
     size: np.ndarray
+    tags: Set = field(default=frozenset())
 
-def get_entity_coords_from_marks(mask: np.ndarray, im1, grid_color=(0,0,0)):
+def get_entity_coords_from_marks(mask: np.ndarray, vl, hl, cell_width):
     assert mask.dtype in [np.uint8, np.int8]
     assert len(mask.shape) == 2
-    vl, hl, mvl, mhl, cell_width = get_grid(im1, grid_color=grid_color)
+    # vl, hl, mvl, mhl, cell_width = get_grid(im1)
     g = grid(vl, hl)
     def get_cell(im, g, gi, cell_width):
         return crop_image(im, Rect(*g[gi], cell_width, cell_width))
@@ -546,11 +577,25 @@ def get_entity_coords_from_marks(mask: np.ndarray, im1, grid_color=(0,0,0)):
             cell = get_cell(mask, g, (i,j), cell_width)
             if np.count_nonzero(cell) != 0:
                 non_empty_cells[(i,j)] = cell
-                
+    
+    rgb_mask = npext(mask) | gray2rgb()
+
+    
+    
+    for i, (k, v) in enumerate(non_empty_cells.items()):
+        
+        x, y = g[k]
+        putOutlinedText(rgb_mask.array, f'{i}', np.array([x,y]) + (3, 16), sz=0.35)
+
+
+
+    # dis(rgb_mask.array)
+
+
     ents = []
     entities = []
 
-    for k, v in non_empty_cells.items():
+    for i, (k, v) in enumerate(non_empty_cells.items()):
         x, y = g[k]
         # dis(v)
         if np.count_nonzero(v) < 20:
@@ -561,6 +606,9 @@ def get_entity_coords_from_marks(mask: np.ndarray, im1, grid_color=(0,0,0)):
             entities.append(e)
             # print(e)
         else:
+            if i == 44:
+                # dis(v)
+                pass
             ccs = get_ccs(v)
             if len(ccs) == 1:
                 d = detect_mark_direction(ccs[0])
@@ -569,6 +617,9 @@ def get_entity_coords_from_marks(mask: np.ndarray, im1, grid_color=(0,0,0)):
                     # check it's TOP_RIGHT orientation
                     i, j = k
                     ii = 1
+                    trf, blf = False, False
+
+
                     while (i+ii, j) not in non_empty_cells:
                         if i+ii >= gw:
                             break
@@ -611,7 +662,9 @@ def get_entity_coords_from_marks(mask: np.ndarray, im1, grid_color=(0,0,0)):
                             logging.info(f'diagonal marking is unexpected diag_dir={diag_dir}')
                             continue
                     ents.append(np.array([x + cell_width * (ii + 1) // 2, y + cell_width * (jj + 1) // 2]))
-                    e = entity(k, np.array([ii, jj]))
+                    e = entity(k, np.array([ii+1, jj+1]))
+                    # print(ii+1, jj+1)
+
                     entities.append(e)
             elif len(ccs) == 2:
                 dirs = set([detect_mark_direction(c) for c in ccs])
@@ -789,6 +842,7 @@ def get_prevalent_color(image):
     return cc
 
 map_corner_to_dir = {
+    None: '_',
     'top-left-ccw': 'down',
     'top-left-cw': 'right',
     'top-right-ccw': 'left',
@@ -895,7 +949,11 @@ def classify_image(img, iii = None, iset = {}):
         # only arrow by which we deduce belt direction
         img = cv.cvtColor(img, cv.COLOR_RGB2GRAY)
         _, img = cv.threshold(img, 30, 255, cv.THRESH_BINARY)
-        
+        # print(iii)
+
+        if cv.countNonZero(img) < 10:
+            return None
+
         contour = find_contour(img)
         if iii in iset:
             dis(img, img_orig)
@@ -1191,7 +1249,8 @@ def get_belt_map(vl, hl, gcw, map_c_to_e, fg):
         if cv.countNonZero(msk) < 32 * 1:
             continue
         
-        # putOutlinedText(fg, f'{i}', (x, y + 16), sz=0.35)
+        putOutlinedText(fg, f'{i}', (x, y + 16), sz=0.35)
+        
         col, cnum = get_prevalent_color(cw)
         # skip cell if gray is not prevalent color
         if i == 385:
@@ -1214,7 +1273,9 @@ def get_belt_map(vl, hl, gcw, map_c_to_e, fg):
             continue
 
         # after all the filtering real cell processing code comes here
-        d = classify_image(c)
+        if i == 771:
+            pass
+        d = classify_image(c, i)
         if d in map_corner_to_dir:
             d = corner_to_dir(d)
         bmap[jj][ii] = d[0]
@@ -1322,3 +1383,125 @@ def collapse_paths(smap, paths):
         out.append(out1)
     return out
 
+@dataclass
+class GridCell:
+    cell_image: np.ndarray
+    loc: np.ndarray
+    idx: np.ndarray
+    grd: np.ndarray
+
+ImagePredicate = Callable[[npt.NDArray], bool]
+
+def iter_grid_cells(grid, image, skip_conditions: List[ImagePredicate] = []) -> Generator[GridCell, None, None]:
+    cell_width = (grid[(1,0)] - grid[(0,0)])[0]
+    for i, row in enumerate(grid):
+        for j, p in enumerate(row):
+            cell = get_cell_at(image, p, cell_width)
+            gc = GridCell(cell, grid[i,j], np.array([i,j]), grid)
+            # if any filter triggers then skip this cell
+            if any(map(lambda pred: pred(gc), skip_conditions)):
+                continue
+            yield gc
+
+''' filters partial cells (shape != WxW)
+'''
+def is_partial_cell(gc: GridCell):
+    cell_width = (gc.grd[(1, 0)] - gc.grd[(0, 0)])[0]
+    return gc.cell_image.shape != (cell_width, cell_width, 3)
+
+''' checks if amount of non-zero pixels in the central part of cell image is low
+'''
+def is_nz_mask_low(gc: GridCell):
+    cell_width = (gc.grd[(1, 0)] - gc.grd[(0, 0)])[0]
+    cell = gc.cell_image
+    w, ww = cell_width, cell_width - 4
+    rr = Rect(w//2 - ww//2, w//2 - ww//2, ww, ww)
+    c = npext(cell) | crop(rr) | to_gray() | bin_threshold(1, 255) | nz()
+    return c.array < ww * ww * 0.3
+
+def get_marks(bg: npext, comp: npext) -> npext:
+    h, w, _ = comp.array.shape
+    r = bg | bitwise_xor(comp) | to_gray() | bin_threshold(10, 255) | erode(cv.MORPH_RECT, 3)
+    cv.rectangle(r.array, (0,0), (w, h), 0, 3)
+    marks = comp | apply_mask(r) | gaussian_blur(1) | to_gray() | bin_threshold(100, 255)
+    return marks
+
+''' checks if this cell is belt
+'''
+class is_belt_pred:
+    def __init__(self, beltmap: np.ndarray):
+        self.beltmap = beltmap
+    def __call__(self, gc: GridCell):
+        i, j = gc.idx
+        return self.beltmap[j,i] != '_'
+
+'''
+'''
+class is_entity_pred:
+    def __init__(self, map_c2e):
+        self.map_c2e = map_c2e
+    def __call__(self, gc: GridCell):
+        return tuple(gc.idx) not in self.map_c2e
+
+''' get cache of the interesting cells and their blurred copies, it used for similarity test
+'''
+def get_similarity_test_cache(grid, fg, beltmap, map_c2e):
+    dd = dict()
+    is_belt = is_belt_pred(beltmap)
+    is_entity = is_entity_pred(map_c2e)
+    for grid_cell in iter_grid_cells(grid, fg, [is_entity, is_partial_cell, is_nz_mask_low, is_belt]):
+        ij, p = tuple(grid_cell.idx), grid_cell.loc
+        h, w, _ = grid_cell.cell_image.shape
+        ww = w - 8
+        rr = Rect(w//2 - ww//2, w//2 - ww//2, ww, ww)
+        blurred_cell = npext(grid_cell.cell_image.copy()) | crop(rr) | gaussian_blur(3) | to_float32()
+        dd[ij] = (grid_cell.cell_image, blurred_cell.array)
+    return dd
+
+def is_similar(cell_cache, idx1, idx2):
+    a, b = cell_cache[idx1][1], cell_cache[idx2][1]
+    assert a.shape == b.shape
+    def diff(p, q):
+        d = np.clip(q - p, 0, 255).astype(np.uint8)
+        _, d = cv.threshold(d, 20, 255, cv.THRESH_BINARY)
+        return np.count_nonzero(d)
+    cnt1, cnt2 = diff(a, b), diff(b, a)
+    h, w, _ = a.shape
+    diff = max(cnt1, cnt2)
+    similar_rate = (h * w - diff) / (h * w)
+    return similar_rate >= 0.9
+
+def get_classes(dd):
+    dd_items = list(dd.items())
+    num_images = len(dd_items)
+    adjacency_list = defaultdict(list)
+    for i in range(len(dd_items)):
+        for j in range(i+1, len(dd_items)):
+            if is_similar(dd, dd_items[i][0], dd_items[j][0]):
+                adjacency_list[i].append(j)
+                adjacency_list[j].append(i)            
+    visited = [False] * num_images
+    def dfs(node, component):
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if not visited[current]:
+                visited[current] = True
+                component.append(current)
+                for neighbor in adjacency_list[current]:
+                    if not visited[neighbor]:
+                        stack.append(neighbor)
+
+    components = []
+    for i in range(num_images):
+        if not visited[i]:
+            component = []
+            dfs(i, component)
+            components.append(component)
+    return components
+
+def get_image_class(dd, idx, components):
+    dd_items = list(dd.items())
+    for cls, comp in enumerate(components):
+        if is_similar(dd, idx, dd_items[comp[0]][0]):
+            return cls
