@@ -233,28 +233,20 @@ def vstack(imgs):
         out_imgs.append(img)
     return np.vstack(out_imgs)
 
+def remove_small_features(binary_image, min_area):
+    binary_image = (binary_image > 0).astype(np.uint8) * 255
+    num_labels, labels, stats, centroids = cv.connectedComponentsWithStats(binary_image, connectivity=8)
+    output_image = np.zeros_like(binary_image)
+    for i in range(1, num_labels):
+        area = stats[i, cv.CC_STAT_AREA]
+        if area >= min_area:
+            output_image[labels == i] = 255
+    return output_image
 
 @contextlib.contextmanager
-def exit_hotkey(key = '^q', ahk = None):
+def exit_hotkey(key = '^q', ahk: autohotkey.AHK = autohotkey.AHK()):
     q = queue.Queue()
-    if ahk is None:
-        ahk = autohotkey.AHK()
     ahk.add_hotkey(key, lambda: q.put('exit'), logging.info('exit hotkey handler'))
-    ahk.start_hotkeys()
-    def get_command():
-        if not q.empty():
-            return q.get()
-        return None
-    yield get_command
-    ahk.stop_hotkeys() 
-
-@contextlib.contextmanager
-def hotkey_handler(key, cmd):
-    q = queue.Queue()
-    ahk = autohotkey.AHK()
-    logging.info(f'adding new hotkey {key} {cmd}')
-    ahk.add_hotkey(key, lambda: q.put(cmd), logging.info(f"{cmd} command triggered"))
-    ahk.start_hotkeys()
     def get_command():
         if not q.empty():
             cmd = q.get()
@@ -262,7 +254,19 @@ def hotkey_handler(key, cmd):
             return cmd
         return None
     yield get_command
-    ahk.stop_hotkeys()
+
+@contextlib.contextmanager
+def hotkey_handler(key, cmd, ahk: autohotkey.AHK = autohotkey.AHK()):
+    q = queue.Queue()
+    logging.info(f'adding new hotkey {key} {cmd}')
+    ahk.add_hotkey(key, lambda: q.put(cmd), logging.info(f"{cmd} command triggered"))
+    def get_command():
+        if not q.empty():
+            cmd = q.get()
+            logging.info(f'hotkey triggered {cmd}')
+            return cmd
+        return None
+    yield get_command
 
 @dataclass
 class point2d:
@@ -512,23 +516,6 @@ def detect_mark_direction(cell) -> MarkDirection:
     }
     return dct[bf]
 
-
-def get_marks(im1, im2):
-    r = cv.bitwise_xor(im1, im2)
-    r = cv.cvtColor(r, cv.COLOR_BGR2GRAY)
-    _, r = cv.threshold(r, 10, 255, cv.THRESH_BINARY)
-    h, w = r.shape
-    cv.rectangle(r, (0,0), (w, h), 0, 5)
-    # i = 1
-    # cross_kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3))
-    # r = cv.erode(r, cross_kernel, iterations=i)
-    # lab_img = cv.cvtColor(im1, cv.COLOR_BGR2LAB)
-    # lower_red = np.array([20, 150, 150])  # Example values for lower bound
-    # upper_red = np.array([255, 255, 255])  # Example values for upper bound
-    # mask = cv.inRange(lab_img, lower_red, upper_red)
-    # mask = cv.bitwise_and(mask, r)
-    return r
-
 def is_single_cell_entity(cell: np.ndarray):
     num_labels, labels, stats, centroids = cv.connectedComponentsWithStats(cell, connectivity=4)
     if num_labels != 5:
@@ -578,14 +565,14 @@ def get_entity_coords_from_marks(mask: np.ndarray, vl, hl, cell_width):
             if np.count_nonzero(cell) != 0:
                 non_empty_cells[(i,j)] = cell
     
-    rgb_mask = npext(mask) | gray2rgb()
+    # rgb_mask = npext(mask) | gray2rgb()
 
     
     
-    for i, (k, v) in enumerate(non_empty_cells.items()):
+    # for i, (k, v) in enumerate(non_empty_cells.items()):
         
-        x, y = g[k]
-        putOutlinedText(rgb_mask.array, f'{i}', np.array([x,y]) + (3, 16), sz=0.35)
+    #     x, y = g[k]
+    #     putOutlinedText(rgb_mask.array, f'{i}', np.array([x,y]) + (3, 16), sz=0.35)
 
 
 
@@ -1219,7 +1206,7 @@ def get_foreground(bg, comp):
     fg = np.clip(fg, 0, 255).astype(np.uint8)
     # fg = cv.cvtColor(fg, cv.COLOR_BGR2RGB)
     fg1 = posterize_blk(fg, 5)
-    return fg1, fg
+    return npext(fg1), npext(fg)
 
 def get_cell_to_entity_map(entities):
     map_c_to_e = {}
@@ -1249,7 +1236,7 @@ def get_belt_map(vl, hl, gcw, map_c_to_e, fg):
         if cv.countNonZero(msk) < 32 * 1:
             continue
         
-        putOutlinedText(fg, f'{i}', (x, y + 16), sz=0.35)
+        # putOutlinedText(fg, f'{i}', (x, y + 16), sz=0.35)
         
         col, cnum = get_prevalent_color(cw)
         # skip cell if gray is not prevalent color
@@ -1419,11 +1406,12 @@ def is_nz_mask_low(gc: GridCell):
     c = npext(cell) | crop(rr) | to_gray() | bin_threshold(1, 255) | nz()
     return c.array < ww * ww * 0.3
 
-def get_marks(bg: npext, comp: npext) -> npext:
+def get_marks(bg: npext, comp: npext, small_features_threshold: int = 30) -> npext:
     h, w, _ = comp.array.shape
     r = bg | bitwise_xor(comp) | to_gray() | bin_threshold(10, 255) | erode(cv.MORPH_RECT, 3)
     cv.rectangle(r.array, (0,0), (w, h), 0, 3)
     marks = comp | apply_mask(r) | gaussian_blur(1) | to_gray() | bin_threshold(100, 255)
+    marks = npext(remove_small_features(marks.array, small_features_threshold))
     return marks
 
 ''' checks if this cell is belt
@@ -1452,7 +1440,7 @@ def get_similarity_test_cache(grid, fg, beltmap, map_c2e):
     for grid_cell in iter_grid_cells(grid, fg, [is_entity, is_partial_cell, is_nz_mask_low, is_belt]):
         ij, p = tuple(grid_cell.idx), grid_cell.loc
         h, w, _ = grid_cell.cell_image.shape
-        ww = w - 8
+        ww = w - 10
         rr = Rect(w//2 - ww//2, w//2 - ww//2, ww, ww)
         blurred_cell = npext(grid_cell.cell_image.copy()) | crop(rr) | gaussian_blur(3) | to_float32()
         dd[ij] = (grid_cell.cell_image, blurred_cell.array)
@@ -1505,3 +1493,4 @@ def get_image_class(dd, idx, components):
     for cls, comp in enumerate(components):
         if is_similar(dd, idx, dd_items[comp[0]][0]):
             return cls
+    return -1
