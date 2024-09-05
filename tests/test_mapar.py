@@ -1570,14 +1570,14 @@ def get_ghosts_locations_diff_image(s: Snail, rect: Rect, mouse_spd: int = 0, sl
     time.sleep(sleep_duration)
     return npext(im1), npext(im2)
 
-def get_grid_img(s: Snail, rect: Rect):
+def get_grid_img(s: Snail, rect: Rect, sleep_duration: float = 0.05):
     # shift + space is pause toggle
     s.ahk.send('+ ')
-    time.sleep(0.05)
+    time.sleep(sleep_duration)
     gr = s.wait_next_frame(rect)
     s.ahk.send('+ ')
-    time.sleep(0.05)
-    return gr
+    time.sleep(sleep_duration)
+    return npext(gr)
 
 
 def get_plan_image(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_time: float = 0.05):
@@ -1596,16 +1596,18 @@ def get_plan_image(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_time: float =
 def test_get_tooltip1():
     clear_images()
     with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
-         hotkey_handler('^1', 'mark_ghosts') as mark_ghosts, \
-         hotkey_handler('^2', 'deploy') as deploy, \
-         hotkey_handler('^3', 'snapshot') as snapshot, \
-         hotkey_handler('^4', 'grid_snapshot') as grid_snapshot, \
+         hotkey_handler('^1', 'mark_ghosts', ahk=s.ahk) as mark_ghosts, \
+         hotkey_handler('^2', 'deploy', ahk=s.ahk) as deploy, \
+         hotkey_handler('^3', 'snapshot', ahk=s.ahk) as snapshot, \
+         hotkey_handler('^4', 'grid_snapshot', ahk=s.ahk) as grid_snapshot, \
         track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
+        
+        # s.ahk.start_hotkeys()
         im = s.wait_next_frame()
         # out = im.copy()
         # out = np.zeros_like()
         grid_width = 32
-        char_reach = 15
+        char_reach = 10
         debug = True
         
         if s.char_offset is not None:
@@ -1620,6 +1622,9 @@ def test_get_tooltip1():
         logging.info(f'{rect}')
 
         while is_not_timeout():
+            if cmd_get() == 'exit':
+                logging.info('exit triggered')
+                break
             if grid_snapshot() == 'grid_snapshot':
                 nogr = s.wait_next_frame(rect)
                 with tool_selector(s, tool='+ ', tool_reset='+ ', sleep_duration=0.01), diff_frame(s, rect) as diff:
@@ -1628,166 +1633,113 @@ def test_get_tooltip1():
                 dump_image('gr')
             if snapshot() =='snapshot':
                 mouse_speed = 0
-                sleep_duration = 0.05
-                gr = get_grid_img(s, rect)
-                bg, comp = get_plan_image(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                fg, fg1 = get_foreground(bg, comp)
-                mark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                im2, im1 = get_ghosts_locations_diff_image(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                im2 = im2 | bgr2rgb()
-                im1 = im1 | bgr2rgb()
-                marks = get_marks(im1, im2)
-                unmark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                dump_images('gr, bg, comp, fg, fg1, im1, im2, marks')
-                
-            if snapshot() =='snapshot1':
-                mouse_speed = 0
-                sleep_duration = 0.05
-                gr = get_grid_img(s, rect)
-                bg, comp = get_plan_image(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                fg, fg1 = get_foreground(bg, comp)
-                mark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                im2, im1 = get_ghosts_locations_diff_image(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                im2 = im2 | bgr2rgb()
-                im1 = im1 | bgr2rgb()
-                marks = get_marks(im1, im2)
-                unmark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
-                time.sleep(sleep_duration * 2)
-                dump_images('gr, bg, comp, fg, fg1, im1, im2, marks')
-                
-            if deploy() == 'deploy':
-                # out = im.copy()
-
-                s.ahk.send('!d')
-                xy = np.array(rect.xy())
-                wh = np.array(rect.wh())
-                s.ahk.mouse_move(*(xy + (2,2)))
-                s.ahk.mouse_drag(*(xy + (2,2) + wh))
+                sleep_duration = 0.02
                 time.sleep(0.5)
-                s.ahk.send('q')
-                bg = s.wait_next_frame(rect)
-                s.ahk.send('^z')
-                time.sleep(0.1)
-                comp = s.wait_next_frame(rect)
+                gr = get_grid_img(s, rect, sleep_duration)
+                bg, comp = get_plan_image(s, rect, mouse_speed, sleep_duration)
+                # time.sleep(sleep_duration * 2)
+                fg, fg1 = get_foreground(bg, comp)
+                # mark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
+                # time.sleep(sleep_duration * 2)
+                im2, im1 = get_ghosts_locations_diff_image(s, rect, mouse_speed, sleep_duration)
+                # time.sleep(sleep_duration * 2)
+                im2 = im2 | bgr2rgb()
+                im1 = im1 | bgr2rgb()
+                mrks = get_marks(im1, im2)
+                # unmark_area_deconstruct_non_ghosts(s, rect, mouse_speed, sleep_duration)
+                # time.sleep(sleep_duration * 2)
 
-                if debug:
-                    dump_image('bg')
-                    dump_image('comp')
+                dump_images('gr, bg, comp, fg, fg1, im1, im2, mrks')
 
-                fg_ = get_foreground(bg, comp)
-                fg1, fg = npext(fg_[0]), npext(fg_[1])
-                
-                if debug:
-                    dump_image('fg')
-                    dump_image('fg1')
-                # out = cv.cvtColor(fg, cv.COLOR_RGB2BGR)
-
-
-                mark_area_deconstruct_non_ghosts(s, rect)
-                im1, im2 = get_ghosts_locations_diff_image(s, rect)
-                marks = get_marks(im1, im2)
-                if debug:
-                    dump_image('im1')
-                    dump_image('im2')
-                    dump_image('marks')
-
-                grid_img = get_grid_img(s, rect)
-
-                vl, hl, mvl, mhl, gcw = get_grid(grid_img)
-                if debug:
-                    dump_image('grid_img')
-
-                ents, ents1 = get_entity_coords_from_marks(marks, vl, hl, gcw)
-
-                logging.info(ents1)
-
-
-
-                
-
-                
+                vl, hl, mvl, mhl, cell_width = get_grid(gr.array)
+                grd = grid(vl, hl)
+                ents, ents1 = get_entity_coords_from_marks(mrks.array, vl, hl, cell_width)
                 map_c2e = get_cell_to_entity_map(ents1)
-                bmap = get_belt_map(vl, hl, gcw, map_c2e, fg)
+                bmap = get_belt_map(vl, hl, cell_width, map_c2e, fg.array)
+                dd = get_similarity_test_cache(grd, fg.array, bmap, map_c2e)
+                cc = get_classes(dd)
+                logging.info(f'entity classes: {cc}')
+                is_belt = is_belt_pred(bmap)
+                is_entity = is_entity_pred(map_c2e)
+                map_idx2cls = dict()
+                map_cls2idx = defaultdict(list)
+                for grid_cell in iter_grid_cells(grd, fg.array, [is_entity, is_partial_cell, is_nz_mask_low, is_belt]):
+                    ij, p = tuple(grid_cell.idx), grid_cell.loc
+                    cls = get_image_class(dd, ij, cc)
+                    map_idx2cls[ij] = cls
+                    map_cls2idx[cls].append(ij)
+                logging.info(map_idx2cls)
+                logging.info(map_cls2idx)
+                for i, (loc, cls_id) in enumerate(map_idx2cls.items()):
+                    p = grd[*loc]
+                    # logging.info(f'loc:{loc} clsid:{cls_id} p:{p}')
+                    putOutlinedText(fg.array, f'{cls_id}', p + (5,16), sz=0.35)
 
+                dump_image('fg', postfix='with_classes')
+                def get_entity_center(p, sz, cell_size: np.ndarray = np.array([32,32])):
+                    return p + (sz * cell_size) // 2
+                for i, (cls, ijlist) in enumerate(map_cls2idx.items()):
+                    # if cls not in [0, 1, 8]:
+                    #     continue
+                    # init tool
+                    ij = ijlist[0]
+                    xy = np.array(rect.xy())
+                    sz = map_c2e[ij]
+                    p = grd[*ij]
+                    s.ahk.mouse_move(*(xy + get_entity_center(p, sz)), speed=mouse_speed)
+                    time.sleep(sleep_duration*3)
+                    s.ahk.send('q')
+                    time.sleep(sleep_duration*3)
+                    for ij in ijlist:
+                        xy = np.array(rect.xy())
+                        wh = np.array(rect.wh())
+                        sz = map_c2e[ij]
+                        p = grd[*ij]
+                        s.ahk.mouse_move(*(xy + get_entity_center(p, sz)), speed=mouse_speed)
+                        s.ahk.click()
+                        time.sleep(sleep_duration*4)
+                    s.ahk.send('q')
 
                 strmap = '\n'.join([''.join(row.tolist()) for row in bmap])
                 logging.info(strmap)
                 graph = build_graph_from_map(strmap)
                 paths = find_all_paths(graph)
                 cpaths = collapse_paths(strmap, paths)
+                logging.info(cpaths)
                 
-                gr = grid(vl, hl)
-                n0 = gr[*(0,0)]
-
-
-                fg1 = fg | posterize(5)
-                vl, hl, mvl, mhl, cell_width = get_grid(gr.array)
-                grd = grid(vl, hl)
-                mrks = get_marks(bg, mrks)
-                ents, ents1 = get_entity_coords_from_marks(mrks.array, vl, hl, cell_width)
-                map_c2e = get_cell_to_entity_map(ents1)
-                bmap = get_belt_map(vl, hl, cell_width, map_c2e, fg1.array)
-                dd = get_similarity_test_cache(grd, fg.array, bmap, map_c2e)
-                cc = get_classes(dd)
-                is_belt = is_belt_pred(bmap)
-                is_entity = is_entity_pred(map_c2e)
-                cls_map = dict()
-                for grid_cell in iter_grid_cells(grd, fg.array, [is_entity, is_partial_cell, is_nz_mask_low, is_belt]):
-                    ij, p = tuple(grid_cell.idx), grid_cell.loc
-                    cls_map[ij] = get_image_class(dd, ij, cc)
-
-                '''
-                s.ahk.mouse_move(*(np.array([n0[0], n0[1]]) + rect.xy()), speed=5)
+                gr = grd
+                # n0 = gr[*(0,0)]
+                # s.ahk.mouse_move(*(np.array([n0[0], n0[1]]) + rect.xy()), speed=mouse_speed*3)
                 for path in cpaths:
                     # there's no need to inverse order of x, y coordinates
                     pt = path[0]
                     pt = [pt[1], pt[0]]
                     xy = gr[*pt]
-                    s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=1)
+                    s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=mouse_speed)
+                    time.sleep(sleep_duration*2)
                     s.ahk.send('q')
-                    time.sleep(0.05)
+                    time.sleep(sleep_duration*2)
                     s.ahk.click(button='L', direction='D')
-                    time.sleep(0.05)
+                    time.sleep(sleep_duration)
+                    if len(path) <= 1:
+                        s.ahk.click(button='L', direction='U')
+                        continue
                     pt = path[1]
                     pt = [pt[1], pt[0]]
                     xy = gr[*pt]
-                    s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=1)
-                    time.sleep(0.05)
-
+                    s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=mouse_speed)
+                    time.sleep(sleep_duration)
                     for pt in path[2:]:
                         pt = [pt[1], pt[0]]
                         xy = gr[*pt]
-                        s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=1)
+                        s.ahk.mouse_move(*(np.array(xy) + rect.xy() + [16,16]), speed=mouse_speed)
                         s.ahk.send('r')
-                        time.sleep(0.05)
+                        time.sleep(sleep_duration)
                     s.ahk.click(button='L', direction='U')
                     s.ahk.send('q')
-                logging.info(cpaths)
-                '''
-
-                """
-                for e in ents:
-                    # cv.rectangle(out, (*(e - (5,5)), 10, 10), (255,255,0), 1)
-                    s.ahk.mouse_move(*(e + rect.xy()), speed=0)
-                    s.ahk.send('q')
-                    s.ahk.click()
-                    s.ahk.send('q')
-                time.sleep(0.5)
-                """
-                # unmark_area_deconstruct_non_ghosts(s, rect)
-            if cmd_get() == 'exit':
-                break
-            # with timer_ms() as elapsed:
-            # ovl_show_img(out)
+                
             time.sleep(0.010)
-
+        # s.ahk.stop_hotkeys()
 
 
 def test_full_screen():
@@ -1803,3 +1755,16 @@ def test_full_screen():
             time.sleep(0.010)
 
 
+def test_hotkeys():
+    with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
+         hotkey_handler('^1', 'mark_ghosts', ahk=s.ahk) as mark_ghosts, \
+         hotkey_handler('^2', 'deploy', ahk=s.ahk) as deploy, \
+         hotkey_handler('^3', 'snapshot', ahk=s.ahk) as snapshot, \
+         hotkey_handler('^4', 'grid_snapshot', ahk=s.ahk) as grid_snapshot, \
+        timeout(1000) as is_not_timeout:
+        s.ahk.start_hotkeys()
+        while is_not_timeout():
+            if cmd_get() == 'exit':
+                break
+            time.sleep(0.05)
+        s.ahk.stop_hotkeys()
