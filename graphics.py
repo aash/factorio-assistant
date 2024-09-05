@@ -19,7 +19,20 @@ class Rect:
         return hash((self.x0, self.y0, self.w, self.h))
     
     def __eq__(self, other):
-        return (self.x0, self.y0, self.w, self.h) == (other.x0, other.y0, other.w, other.h)
+        if isinstance(other, tuple):
+            return self.xywh() == other
+        elif isinstance(other, list):
+            return list(self.xywh()) == other
+        elif isinstance(other, Rect):
+            return (self.x0, self.y0, self.w, self.h) == (other.x0, other.y0, other.w, other.h)
+        else:
+            return False
+
+    def __repr__(self):
+        return self.__str__()
+    
+    def __str__(self):
+        return ','.join(map(str, self.xywh()))
 
     def top(self) -> int:
         return self.y0
@@ -81,6 +94,11 @@ class Rect:
     def center(self) -> np.ndarray:
         return np.array((self.x0 + self.w // 2, self.y0 + self.h // 2))
     
+    @classmethod
+    def from_str(cls, s:str) -> 'Rect':
+        assert isinstance(s, str), 'parameter should be str(ing)'
+        return Rect(*map(int, s.split(',')))
+
     @classmethod
     def from_ptdm(cls, pt: Tuple, dim: Tuple) -> 'Rect':
         return Rect(*pt, *dim)
