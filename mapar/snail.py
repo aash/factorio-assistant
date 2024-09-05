@@ -11,11 +11,18 @@ import numpy as np
 import time
 from enum import Enum
 import itertools
+import yaml
+import os
+from box import Box
+from pathlib import Path
 
 
 from contextlib import contextmanager
 WIDGET_MINIMUM_AREA = 50 * 50
 
+
+def wh2str(wh: Tuple[int]) -> str:
+    return f'{wh[0]}x{wh[1]}'
 
 def get_bounding_rects(f0, f1) -> List[Rect]:
     '''
@@ -60,6 +67,7 @@ class SnailWindowMode(Enum):
 
 class Snail:
 
+    CONFIG_FILE = 'config.yaml'
     FACTORIO_WINDOW_NAME = 'Factorio'
     COLOR_BLACK = (0, 0, 0)
     COLOR_GREEN = (0, 255, 0)
@@ -80,6 +88,10 @@ class Snail:
             self.window = None
             self.window_id = None
             self.window_rect = get_screen_rect()
+        cfg_file = Path(self.CONFIG_FILE)
+        if not cfg_file.exists():
+            cfg_file.touch()
+        self.config = Box.from_yaml(filename=self.CONFIG_FILE)
         self.d3d_fps = 30
         self.debug_ui_rect = None
 
@@ -89,8 +101,13 @@ class Snail:
         self.d3d.capture(target_fps=self.d3d_fps, region=self.window_rect.xyxy())
         logging.info(f'snail started {self.window_rect}')
         self.ensure_next_frame()
-        r, f0, f1 = self.get_widget_brects(default_delay=0.6)
-        self.non_ui_rect = self.get_non_ui_rect(r)
+        
+        if self.window_rect != Rect.from_str(self.config.get('prev_win_resolution')) or \
+            not hasattr(self.config, 'prev_non_ui_rect'):
+            r, _, _ = self.get_widget_brects(default_delay=0.6)
+            self.non_ui_rect = self.get_non_ui_rect(r)
+        else:
+            self.non_ui_rect = Rect.from_str(self.config.prev_non_ui_rect)
         logging.info(f'non ui rect: {self.non_ui_rect}')
         non_ui_img = self.wait_next_frame()
         ents = self.get_entity_coords(non_ui_img)
@@ -107,13 +124,20 @@ class Snail:
                 self.char_offset = np.array((960, 541))
             else:
                 self.char_offset = None
+        self.ahk.start_hotkeys()
         time.sleep(0.5)
         return self
 
     def __exit__(self, *exc_details):
+        self.ahk.stop_hotkeys()
         time.sleep(0.1)
         logging.info('Stopping snail')
         self.d3d.stop()
+        self.config.prev_win_resolution = str(self.window_rect)
+        self.config.prev_non_ui_rect = str(self.non_ui_rect)
+        self.config.char_location = {'3840x2160': '1921,1081',
+            '1920x1080': '960,541'}
+        self.config.to_yaml(self.CONFIG_FILE)
         del self.ahk
 
     def get_diff_image(self, action, initialize = None, finalize = None, roi = None):
