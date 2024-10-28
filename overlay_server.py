@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         self.w.setLayout(l)
         self.setCentralWidget(self.w)
 
-        self.w.setStyleSheet("border: 2px dashed green")
+        # self.w.setStyleSheet("border: 2px dashed green")
 
         # self.setWindowOpacity(0.75)
 
@@ -150,7 +150,7 @@ class MainWindow(QMainWindow):
         self.label = QLabel(self)
         self.label.setStyleSheet("")
         self.label.setAlignment(Qt.AlignRight)
-        self.label.setStyleSheet("font-family: 'JetBrainsMono Nerd Font Mono', 'Consolas'; color: white; font-size: 20px; ")
+        self.label.setStyleSheet("font-family: 'JetBrainsMono Nerd Font Mono', 'Consolas'; color: white; font-size: 12px; ")
         self.label.move(0, 0)
         # self.label.setTextMask("00:00.000")
         self.label.setText("00:00.000")

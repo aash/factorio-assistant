@@ -1406,13 +1406,25 @@ def is_nz_mask_low(gc: GridCell):
     c = npext(cell) | crop(rr) | to_gray() | bin_threshold(1, 255) | nz()
     return c.array < ww * ww * 0.3
 
-def get_marks(bg: npext, comp: npext, small_features_threshold: int = 30) -> npext:
+def get_marks1(bg: npext, comp: npext, small_features_threshold: int = 30) -> npext:
     h, w, _ = comp.array.shape
     r = bg | bitwise_xor(comp) | to_gray() | bin_threshold(10, 255) | erode(cv.MORPH_RECT, 3)
     cv.rectangle(r.array, (0,0), (w, h), 0, 3)
     marks = comp | apply_mask(r) | gaussian_blur(1) | to_gray() | bin_threshold(100, 255)
     marks = npext(remove_small_features(marks.array, small_features_threshold))
     return marks
+
+def get_marks(bg: npext, mrks: npext, small_features_threshold: int = 25) -> npext:
+    _, fg = get_foreground(bg.array, mrks.array)
+    res = fg | to_gray() | bin_threshold(1, 255)
+    thresh0 = small_features_threshold
+    thresh1 = small_features_threshold * 2
+    res = npext(remove_small_features(res.array, thresh1)) | erode(cv.MORPH_RECT, 3) | dilate(cv.MORPH_RECT, 3)
+    res = npext(remove_small_features(res.array, thresh1)) | erode(cv.MORPH_RECT, 5) | dilate(cv.MORPH_RECT, 3)
+    res = mrks | apply_mask(res) | to_gray() | bin_threshold(45, 255)
+    res = npext(remove_small_features(res.array, thresh0)) | dilate(cv.MORPH_ELLIPSE, 3) | bin_threshold(1, 255)
+    return res
+
 
 ''' checks if this cell is belt
 '''

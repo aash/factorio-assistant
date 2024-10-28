@@ -1513,7 +1513,7 @@ def tool_selector(s: Snail, tool: str | List[str], tool_reset: str | List[str] =
         time.sleep(sleep_duration)
 
 @contextmanager
-def diff_frame(s: Snail, roi: Rect):
+def diff_frame(s: Snail, roi: Rect = None):
     diff = [s.wait_next_frame(roi)]
     logging.info('first screen')
     def accessor():
@@ -1592,6 +1592,40 @@ def get_plan_image(s: Snail, rect: Rect, mouse_spd: int = 0, sleep_time: float =
     return bg, comp
 
 
+def get_widget_brects(self, default_delay=0.2) -> Tuple[List[Rect], np.ndarray, np.ndarray]:
+    it_count = 2
+    sleep_time = default_delay
+    def initialize():
+        time.sleep(sleep_time)
+        self.ahk.mouse_move(1, 1)
+        time.sleep(sleep_time)
+    def action():
+        self.ahk.send_input(f'{{WheelUp {it_count}}}', blocking=True)
+        time.sleep(sleep_time)
+    def finalize():
+        self.ahk.send_input(f'{{WheelDown {it_count}}}', blocking=True)
+    im0, im1 = self.get_diff_image(action, initialize, finalize)
+    brects = get_bounding_rects(im0, im1)
+    return brects, im0, im1
+
+
+def zoom_diff(s: Snail, r: Rect = None, sleep_time: float = 0.05, it_count = 2):
+    s.ahk.mouse_move(1, 1)
+    with diff_frame(s, r) as diff:
+        time.sleep(sleep_time)
+        s.ahk.send_input(f'{{WheelUp {it_count}}}')
+        time.sleep(sleep_time)
+    im1, im2 = diff()
+    s.ahk.send_input(f'{{WheelDown {it_count}}}')
+    return im1, im2
+
+def test_zoom_diff():
+    with Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s:
+        time.sleep(3.0)
+        im1, im2 = zoom_diff(s)
+        imxor = cv.bitwise_xor(im1, im2)
+        dump_images('im1, im2, imxor')
+
 
 def test_get_tooltip1():
     clear_images()
@@ -1600,6 +1634,7 @@ def test_get_tooltip1():
          hotkey_handler('^2', 'deploy', ahk=s.ahk) as deploy, \
          hotkey_handler('^3', 'snapshot', ahk=s.ahk) as snapshot, \
          hotkey_handler('^4', 'grid_snapshot', ahk=s.ahk) as grid_snapshot, \
+         hotkey_handler('^5', 'select_bp', ahk=s.ahk) as select_bp, \
         track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
         
         # s.ahk.start_hotkeys()
@@ -1631,6 +1666,41 @@ def test_get_tooltip1():
                     pass
                 gr, _ = diff()
                 dump_image('gr')
+
+            if select_bp() == 'select_bp':
+                mouse_speed = 0
+                sleep_duration = 0.02
+                time.sleep(0.5)
+                gr = get_grid_img(s, rect, sleep_duration)
+                im2, im1 = get_ghosts_locations_diff_image(s, rect, mouse_speed, sleep_duration)
+                im2 = im2 | bgr2rgb()
+                im1 = im1 | bgr2rgb()
+                mrks = get_marks(im1, im2)
+                vl, hl, mvl, mhl, cell_width = get_grid(gr.array)
+                grd = grid(vl, hl)
+                ents, ents1 = get_entity_coords_from_marks(mrks.array, vl, hl, cell_width)
+                map_c2e = get_cell_to_entity_map(ents1)
+
+                out = mrks | gray2rgb()
+
+                for i, (loc, sz) in enumerate(map_c2e.items()):
+                    p = grd[*loc]
+                    putOutlinedText(out.array, f'{sz}', p + (5,16), sz=0.35)
+
+                logging.info(map_c2e)
+                dump_images('gr, im1, im2, mrks, out')
+
+                first_machine = list(map_c2e.items())[0][0]
+                fm_offset = np.array(rect.xy()) + grd[*first_machine] + [cell_width, cell_width]
+                logging.info(f' {first_machine} {np.array(rect.xy())} {grd[*first_machine]} {fm_offset}')
+
+                with diff_frame(s) as diff:
+                   s.ahk.mouse_move(*fm_offset)
+
+                ttim1, ttim2 = diff()
+                dump_images('ttim1, ttim2')
+                
+
             if snapshot() =='snapshot':
                 mouse_speed = 0
                 sleep_duration = 0.02
@@ -1656,7 +1726,8 @@ def test_get_tooltip1():
                 ents, ents1 = get_entity_coords_from_marks(mrks.array, vl, hl, cell_width)
                 map_c2e = get_cell_to_entity_map(ents1)
                 bmap = get_belt_map(vl, hl, cell_width, map_c2e, fg.array)
-                dd = get_similarity_test_cache(grd, fg.array, bmap, map_c2e)
+                gray_fg = fg | to_gray() | gray2rgb()
+                dd = get_similarity_test_cache(grd, gray_fg.array, bmap, map_c2e)
                 cc = get_classes(dd)
                 logging.info(f'entity classes: {cc}')
                 is_belt = is_belt_pred(bmap)
@@ -1673,9 +1744,9 @@ def test_get_tooltip1():
                 for i, (loc, cls_id) in enumerate(map_idx2cls.items()):
                     p = grd[*loc]
                     # logging.info(f'loc:{loc} clsid:{cls_id} p:{p}')
-                    putOutlinedText(fg.array, f'{cls_id}', p + (5,16), sz=0.35)
+                    putOutlinedText(gray_fg.array, f'{cls_id}', p + (5,16), sz=0.35)
 
-                dump_image('fg', postfix='with_classes')
+                dump_image('gray_fg', postfix='with_classes')
                 def get_entity_center(p, sz, cell_size: np.ndarray = np.array([32,32])):
                     return p + (sz * cell_size) // 2
                 for i, (cls, ijlist) in enumerate(map_cls2idx.items()):
@@ -1768,3 +1839,24 @@ def test_hotkeys():
                 break
             time.sleep(0.05)
         s.ahk.stop_hotkeys()
+
+
+def test_hotkeys():
+    ahk = autohotkey.AHK()
+    ahk.start_hotkeys()
+    with overlay_client() as ovl_show_img, exit_hotkey(ahk=ahk) as cmd_get, timeout(1000000) as is_not_timeout:
+        while is_not_timeout():
+            if cmd_get() == 'exit':
+                break
+    ahk.stop_hotkeys()
+
+def test_whisper():
+
+    import whisper
+    model = whisper.load_model(".en")
+    for i in range(3):
+        with timer_ms() as elapsed:
+            result = model.transcribe("g:/rec.ogg", language='en', task="transcribe")
+            logging.info(result["text"])
+            t = elapsed()
+            logging.info(f'transcribe elapsed {t} ms')
