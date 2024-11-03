@@ -1,5 +1,5 @@
 
-from PyQt6.QtGui import QImage
+from PySide6.QtGui import QImage
 import numpy as np
 from cvutils import convertQImageToMat, convertMatToQImage
 import pytest
