@@ -13,3 +13,4 @@ __pycache__
 tmp/**
 best.pt
 logs/**
+experiments/tmp
