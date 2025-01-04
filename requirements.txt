@@ -10,3 +10,7 @@ PySide6_Essentials==6.7.0
 pywin32==306
 pywin32-ctypes==0.2.2
 scipy==1.13.0
+scikit-image==0.25.0
+pyaml==24.9.0
+python-box==7.2.0
+qasync==0.27.1

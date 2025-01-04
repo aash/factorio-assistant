@@ -33,7 +33,7 @@ if False:
     canvas_rgb = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGRA)
     blob = canvas
 else:
-    opn = cv2.imread('opn.png')
+    opn = cv2.imread('tmp/opn.png')
     height, width, _ = opn.shape
     opn = cv2.cvtColor(opn, cv2.COLOR_BGR2GRAY)
     canvas_rgb = cv2.cvtColor(opn, cv2.COLOR_GRAY2BGRA)
@@ -87,10 +87,10 @@ class ImageWindow(QMainWindow):
         q_image = QImage(image.data, image.shape[1], image.shape[0], image.strides[0], QImage.Format.Format_ARGB32)
         self.label.setPixmap(QPixmap.fromImage(q_image))
         
-    def mouseMoveEvent(self, event):
+    # def mouseMoveEvent(self, event):
         # print('mouseMoveEvent: pos {}'.format(event.pos()))
 
-    # def eventFilter(self, source, event):
+    def eventFilter(self, source, event):
         # if event.type() != QtCore.QEvent.MouseMove:
             # return
         # if hasattr(event, 'buttons') and event.buttons() != QtCore.Qt.NoButton:

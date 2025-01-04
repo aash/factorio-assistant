@@ -9,6 +9,9 @@ from asyncio.exceptions import IncompleteReadError
 import multiprocessing as mp
 import multiprocessing.shared_memory as shm
 import sys
+from PySide6.QtWidgets import QMainWindow, QPlainTextEdit
+from PySide6.QtCore import Qt
+from qasync import QEventLoop, QApplication
 
 OVERLAY_IMAGE_BUFFER = 'overlay_image_buffer'
 
@@ -109,10 +112,6 @@ def json_to_marker(json_string):
         data=data['data']
     )
 
-from PySide6.QtWidgets import QMainWindow, QPlainTextEdit
-from PySide6.QtCore import Qt
-from qasync import QEventLoop, QApplication
-# from asyncqt import QEventLoop
 class MainWindow(QMainWindow):
     update_signal = Signal()
     new_marker_signal = Signal()

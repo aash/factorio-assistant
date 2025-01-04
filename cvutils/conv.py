@@ -1,5 +1,5 @@
 
-from PyQt6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap
 import numpy as np
 
 FMT2CHN_MAP = {
