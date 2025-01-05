@@ -1,5 +1,6 @@
 import numpy as np
 import cv2 as cv
+import cv2
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Tuple
@@ -16,6 +17,7 @@ from graphics import *
 from typing import List, Callable, Generator, Set
 import numpy.typing as npt
 from collections import defaultdict
+from scipy.ndimage import gaussian_filter
 
 class DataObject:
     def __init__(self, data_dict):
@@ -1464,3 +1466,59 @@ def get_image_class(dd, idx, components):
         if is_similar(dd, idx, dd_items[comp[0]][0]):
             return cls
     return -1
+
+def rgb2hsv(c):
+    i = np.zeros(shape=(1,1,3), dtype=np.uint8)
+    i[0,0] = c
+    return cv2.cvtColor(i, cv2.COLOR_RGB2HSV)[0, 0]
+
+def hsv2rgb(c):
+    i = np.zeros(shape=(1,1,3), dtype=np.uint8)
+    i[0,0] = c
+    return cv2.cvtColor(i, cv2.COLOR_HSV2RGB)[0, 0]
+
+def get_blue(img):
+    cols = np.array([
+        [13, 34, 40],
+        [22, 43, 49],
+        [21, 56, 67],
+        [36, 71, 82]])
+    h, w, _ = img.shape
+    mask = np.zeros(shape=(h, w), dtype=np.uint8)
+    for c in cols:
+        cmask = cv2.inRange(img, c, c)
+        mask = cv2.bitwise_or(cmask, mask)
+    return mask
+
+def get_red(img):
+    hsv_image = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    lower_red_1 = np.array([0, 100, 100])
+    upper_red_1 = np.array([10, 255, 255])
+    lower_red_2 = np.array([160, 100, 100])
+    upper_red_2 = np.array([180, 255, 255])
+    mask1 = cv2.inRange(hsv_image, lower_red_1, upper_red_1)
+    mask2 = cv2.inRange(hsv_image, lower_red_2, upper_red_2)
+    red_mask = cv2.bitwise_or(mask1, mask2)
+    high_intensity_mask = cv2.inRange(hsv_image[:, :, 2], 150, 255)
+    final_mask = cv2.bitwise_and(red_mask, high_intensity_mask)
+    _, m = cv2.threshold(final_mask, 1, 255, cv2.THRESH_BINARY)
+    return m
+
+def translate_calculate_restore(img, factor=0.25):
+    img = cv2.resize(img, None, fx=factor, fy=factor)
+    red_mask = get_red(img)
+    sigma = 15.0
+    red_mask = gaussian_filter(red_mask, sigma=sigma)
+    _, red_mask = cv2.threshold(red_mask, 25, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polygons = []
+    stats = {}
+    for i, contour in enumerate(contours):
+        ar = cv2.contourArea(contour)
+        al = cv2.arcLength(contour, True)
+        epsilon = 8 * np.power(al, 1/17)
+        approx_polygon = cv2.approxPolyDP(contour, epsilon, True)
+        approx_polygon = approx_polygon / factor
+        polygons.append(approx_polygon)
+        stats[i] = {'area': ar, 'arclen': al}
+    return polygons, stats, red_mask

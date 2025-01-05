@@ -1635,6 +1635,7 @@ def test_get_tooltip1():
          hotkey_handler('^3', 'snapshot', ahk=s.ahk) as snapshot, \
          hotkey_handler('^4', 'grid_snapshot', ahk=s.ahk) as grid_snapshot, \
          hotkey_handler('^5', 'select_bp', ahk=s.ahk) as select_bp, \
+         hotkey_handler('^6', 'send_spider', ahk=s.ahk) as send_spider, \
         track_dist(3.0) as (tr, get_ani_map), timeout(1000) as is_not_timeout:
         
         # s.ahk.start_hotkeys()
@@ -1660,6 +1661,24 @@ def test_get_tooltip1():
             if cmd_get() == 'exit':
                 logging.info('exit triggered')
                 break
+
+            if send_spider() == 'send_spider':
+                time.sleep(0.5)
+                im = s.wait_next_frame()
+                # dump_image('im')
+                blobs, stats, msk = translate_calculate_restore(im)
+                # midpoint = np.array(s.window_rect.wh()) // 2
+                # s.ahk.click(*midpoint, button='R')
+                dump_images('im, msk')
+                if len(blobs) > 0:
+                    s.ahk.send('{Shift Down}')
+                    for p in blobs[1]:
+                        x, y = p[0]
+                        s.ahk.click(x, y, button='R')
+                    s.ahk.send('{Shift Up}')
+                pass
+                
+
             if grid_snapshot() == 'grid_snapshot':
                 nogr = s.wait_next_frame(rect)
                 with tool_selector(s, tool='+ ', tool_reset='+ ', sleep_duration=0.01), diff_frame(s, rect) as diff:
