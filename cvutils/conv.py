@@ -1,3 +1,4 @@
+from typing import Optional
 
 from PySide6.QtGui import QImage, QPixmap
 import numpy as np
@@ -19,15 +20,16 @@ def formatToChannelNumber(fmt: QImage.Format) -> int:
 def channelNumberToFormat(chn: int) -> QImage.Format:
     return CHN2FMT_MAP[chn]
 
-def convertQImageToMat(origImg: QImage, output_dims: int = 3) -> np.ndarray: 
+def convertQImageToMat(origImg: QImage, output_dims: int = 3) -> Optional[np.ndarray]: 
     '''  Converts a QImage into an opencv MAT format,
      cancels out alpha channel '''
     if output_dims not in [3, 4]:
-        raise RuntimeError(f'only RGBA (dims=4) and RGB (dims=3) are supported,: {output_dims}')
+        return None
+        # raise RuntimeError(f'only RGBA (dims=4) and RGB (dims=3) are supported,: {output_dims}')
     img = origImg.copy().convertToFormat(QImage.Format.Format_RGB32)
     w, h = img.width(), img.height()
     ptr = img.bits()
-    ptr.setsize(w * h * 4)
+    ptr.setsize(w * h * 4)  # ty:ignore[unresolved-attribute]
     arr = np.frombuffer(ptr, dtype=np.uint8).reshape(h, w, 4)
     arr = np.copy(arr)
     if output_dims == 4:
