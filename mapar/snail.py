@@ -4,7 +4,7 @@ from typing import List, Tuple
 import logging
 import ahk as autohotkey
 from mapar import MapParser
-from d3dshot_stub import D3DShot, CaptureOutputs
+import dxcam
 from common import * 
 import cv2 as cv
 import numpy as np
@@ -92,13 +92,19 @@ class Snail:
         if not cfg_file.exists():
             cfg_file.touch()
         self.config = Box.from_yaml(filename=self.CONFIG_FILE)
-        self.d3d_fps = 30
+        self._dxgi_backend = "dxcam"
+        self.dxgi_fps = 30
         self.debug_ui_rect = None
 
     def __enter__(self):
         logging.info('Starting snail')
-        self.d3d = D3DShot(capture_output=CaptureOutputs.NUMPY, fps = self.d3d_fps, roi = self.window_rect)
-        self.d3d.capture(target_fps=self.d3d_fps, region=self.window_rect.xyxy())
+        self.dxgi_dxcam_device = dxcam.create(
+            backend="dxgi", # default Desktop Duplication backend
+            processor_backend="cv2", # default OpenCV processor
+            output_color="BGR",
+            region=self.window_rect.xyxy(),
+        )
+        self.dxgi_dxcam_device.start(target_fps=self.dxgi_fps)
         logging.info(f'snail started {self.window_rect}')
         self.ensure_next_frame()
         
@@ -132,7 +138,7 @@ class Snail:
         self.ahk.stop_hotkeys()
         time.sleep(0.1)
         logging.info('Stopping snail')
-        self.d3d.stop()
+        self.dxgi_dxcam_device.stop()
         self.config.prev_win_resolution = str(self.window_rect)
         self.config.prev_non_ui_rect = str(self.non_ui_rect)
         self.config.char_location = {'3840x2160': '1921,1081',
@@ -148,9 +154,9 @@ class Snail:
         '''
         if initialize:
             initialize()
-        im1, _ = self.d3d.wait_next_frame()
+        im1, _ = self.dxgi_dxcam_device.get_latest_frame()
         action()
-        im2, _ = self.d3d.wait_next_frame()
+        im2, _ = self.dxgi_dxcam_device.get_latest_frame()
         if finalize:
             finalize()
         return im1, im2
@@ -186,11 +192,15 @@ class Snail:
         return brect
     
     def wait_next_frame(self, roi: Rect = None) -> np.ndarray:
-        f, *_ = self.d3d.wait_next_frame(roi=roi)
+        if roi is not None:
+            raise RuntimeError('unsupported argument')
+        f, *_ = self.dxgi_dxcam_device.get_latest_frame()
         return f
 
     def wait_next_frame_with_time(self, roi: Rect = None):
-        f, t = self.d3d.wait_next_frame(roi=roi)
+        if roi is not None:
+            raise RuntimeError('unsupported argument')
+        f, t = self.dxgi_dxcam_device.get_latest_frame(with_timestamp=True)
         return f, t
     
     def ensure_next_frame(self):
