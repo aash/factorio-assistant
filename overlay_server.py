@@ -12,6 +12,10 @@ import sys
 from PySide6.QtWidgets import QMainWindow, QPlainTextEdit
 from PySide6.QtCore import Qt
 from qasync import QEventLoop, QApplication
+import ctypes
+import ctypes.wintypes
+from ctypes import windll
+import functools
 
 OVERLAY_IMAGE_BUFFER = 'overlay_image_buffer'
 
@@ -77,7 +81,7 @@ from dataclasses import dataclass
 
 from PySide6.QtGui import QCloseEvent, QPainter, QColor, QPen, QBrush, QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QGraphicsLayout, QBoxLayout, QSizePolicy, QLabel
-from PySide6.QtCore import QRect, Qt, QThread, QEvent, Signal
+from PySide6.QtCore import QRect, Qt, QThread, QEvent, Signal, QTimer
 from PySide6.QtWidgets import QLabel
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QBrush, QPen, QFontMetrics, QPainterPath, QPainter
@@ -112,6 +116,76 @@ def json_to_marker(json_string):
         data=data['data']
     )
 
+
+
+
+GWL_EXSTYLE      = -20
+WS_EX_LAYERED    = 0x00080000
+WS_EX_TRANSPARENT= 0x00000020
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+
+def _apply_capture_exclusion(widget):
+    win = widget.windowHandle()
+    if not win:
+        return
+
+    hwnd = ctypes.wintypes.HWND(int(win.winId()))
+
+
+    # Should print True for a proper top-level overlay
+    print("Is top-level:", widget.isWindow())
+    print("Window flags:", hex(int(widget.windowFlags())))
+
+    hwnd = ctypes.wintypes.HWND(int(win.winId()))
+    ex_style = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+    print("WS_EX_LAYERED present:", bool(ex_style & WS_EX_LAYERED))
+    print("HWND:", hwnd)
+
+
+    # Read current extended style
+    GetWindowLongPtr = ctypes.windll.user32.GetWindowLongPtrW
+    SetWindowLongPtr = ctypes.windll.user32.SetWindowLongPtrW
+
+    ex_style = GetWindowLongPtr(hwnd, GWL_EXSTYLE)
+
+    # Ensure WS_EX_LAYERED is set — required for SetWindowDisplayAffinity
+    if not (ex_style & WS_EX_LAYERED):
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED)
+
+    # Now apply capture exclusion
+
+            # Use ONLY SetWindowDisplayAffinity which makes window invisible to capture but visible to user
+            # DO NOT use DwmSetWindowAttribute with DWMWA_CLOAK which makes window completely invisible
+    try:
+        # Define the SetWindowDisplayAffinity function
+        # user32 = ctypes.WinDLL("user32", use_last_error=True)
+        # user32.SetWindowDisplayAffinity.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.DWORD]
+        # user32.SetWindowDisplayAffinity.restype  = ctypes.wintypes.BOOL
+
+        from ctypes import windll, c_int, byref, sizeof, Structure, POINTER, WINFUNCTYPE, c_void_p, c_bool
+        from ctypes.wintypes import DWORD, HWND, ULONG, POINT, RECT, UINT
+
+        SetWindowDisplayAffinity = windll.user32.SetWindowDisplayAffinity
+        SetWindowDisplayAffinity.restype = c_bool
+        SetWindowDisplayAffinity.argtypes = [HWND, DWORD]
+
+        # Apply the capture exclusion flag
+        result = windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+        if result:
+            print("Applied Window Display Affinity exclusion")
+            # self._excluded_from_capture = True
+        else:
+            error = windll.kernel32.GetLastError()
+            print(f"Failed to set Window Display Affinity: error {error}")
+    except Exception as e:
+        print(f"Error applying Window Display Affinity: {e}")
+    # result = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+    # if not result:
+    # print(f"Still failed: {ctypes.get_last_error()}")
+
+
 class MainWindow(QMainWindow):
     update_signal = Signal()
     new_marker_signal = Signal()
@@ -119,6 +193,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, stop_event: asyncio.Event, scr_res: QSize):
         super().__init__()
+        _apply_capture_exclusion(self)
         self.sev = stop_event
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowTransparentForInput |
@@ -140,7 +215,7 @@ class MainWindow(QMainWindow):
         self.w.setLayout(l)
         self.setCentralWidget(self.w)
 
-        # self.w.setStyleSheet("border: 2px dashed green")
+        self.w.setStyleSheet("border: 2px dashed green")
 
         # self.setWindowOpacity(0.75)
 
@@ -172,6 +247,10 @@ class MainWindow(QMainWindow):
         self.sev = stop_event
         self.img = None
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, functools.partial(_apply_capture_exclusion, self))
+
     @classmethod
     async def create(cls, loop, stop_event, sz: QSize):
         cc = cls(stop_event, sz)
@@ -182,6 +261,8 @@ class MainWindow(QMainWindow):
         painter = QPainter(self)
         if self.img is not None:
             painter.drawImage(0, 0, self.img)
+        painter.setBrush(QColor(255,0,0, 255))
+        painter.drawRect(200, 200, 200, 200)
         event.accept()
         
     async def update_timer(self):

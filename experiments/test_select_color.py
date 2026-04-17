@@ -10,9 +10,11 @@ from PySide6 import QtCore
 from PySide6 import QtGui
 
 
-opn = cv2.imread('experiments/tmp/map.png')
+# opn = cv2.imread('experiments/tmp/map_spider_biter.png')
+opn = cv2.imread('tmp/test_get_tooltip1_im.bmp')
 height, width, _ = opn.shape
-opn = cv2.resize(opn, None, fx=0.25, fy=0.25)
+factor = 0.5
+opn = cv2.resize(opn, None, fx=factor, fy=factor)
 opn = cv2.cvtColor(opn, cv2.COLOR_BGR2RGB)
 
 

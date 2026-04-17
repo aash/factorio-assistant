@@ -3,17 +3,19 @@ import cv2 as cv
 import cv2
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Tuple
-from copy import deepcopy
 import time
 import contextlib
 import itertools
 import queue
 import ahk as autohotkey
 import logging
-import win32api
-from npext import *
-from graphics import *
+from npext import (
+    npext
+)
+from graphics import (
+    Rect,
+    Segment,
+)
 from typing import List, Callable, Generator, Set
 import numpy.typing as npt
 from collections import defaultdict
@@ -245,7 +247,7 @@ def remove_small_features(binary_image, min_area):
     return output_image
 
 @contextlib.contextmanager
-def exit_hotkey(key = '^q', ahk: autohotkey.AHK = autohotkey.AHK()):
+def exit_hotkey(key = '^q', ahk: autohotkey.AHK = autohotkey.AHK(version='v2')):
     q = queue.Queue()
     ahk.add_hotkey(key, lambda: q.put('exit'), logging.info('exit hotkey handler'))
     def get_command():
@@ -257,7 +259,7 @@ def exit_hotkey(key = '^q', ahk: autohotkey.AHK = autohotkey.AHK()):
     yield get_command
 
 @contextlib.contextmanager
-def hotkey_handler(key, cmd, ahk: autohotkey.AHK = autohotkey.AHK()):
+def hotkey_handler(key, cmd, ahk: autohotkey.AHK = autohotkey.AHK(version='v2')):
     q = queue.Queue()
     logging.info(f'adding new hotkey {key} {cmd}')
     ahk.add_hotkey(key, lambda: q.put(cmd), logging.info(f"{cmd} command triggered"))
@@ -1490,6 +1492,19 @@ def get_blue(img):
         mask = cv2.bitwise_or(cmask, mask)
     return mask
 
+def get_biter_blobs(img, threshold=3):
+    cols = np.array([
+        [159, 19, 19],
+        [255, 31, 31]])
+    h, w, _ = img.shape
+    mask = np.zeros(shape=(h, w), dtype=np.uint8)
+    delta = np.array([threshold] * 3).astype(np.uint8)
+    for c in cols:
+
+        cmask = cv2.inRange(img, c-delta, c+delta)
+        mask = cv2.bitwise_or(cmask, mask)
+    return mask
+
 def get_red(img):
     hsv_image = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     lower_red_1 = np.array([0, 100, 100])
@@ -1506,7 +1521,7 @@ def get_red(img):
 
 def translate_calculate_restore(img, factor=0.25):
     img = cv2.resize(img, None, fx=factor, fy=factor)
-    red_mask = get_red(img)
+    red_mask = get_biter_blobs(img)
     sigma = 15.0
     red_mask = gaussian_filter(red_mask, sigma=sigma)
     _, red_mask = cv2.threshold(red_mask, 25, 255, cv2.THRESH_BINARY)

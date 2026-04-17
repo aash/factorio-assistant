@@ -1,0 +1,43 @@
+[project]
+name = "factorio-assistant"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ahk>=1.8.4",
+    "dxcam[cv2,winrt]>=0.3.0",
+    "ipython>=9.12.0",
+    "msgpack>=1.1.2",
+    "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "overlay",
+    "pyaml>=26.2.1",
+    "pyopengl>=3.1.10",
+    "pyopengl-accelerate>=3.1.10",
+    "pyside6>=6.11.0",
+    "pytest>=9.0.3",
+    "python-box>=7.4.1",
+    "pywin32>=311",
+    "pyzmq>=27.1.0",
+    "qasync>=0.28.0",
+    "rapidshot>=1.1.0",
+    "scikit-image>=0.26.0",
+    "ty>=0.0.29",
+    "zmq>=0.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.uv.sources]
+vc = { path = ".", editable = true }
+overlay = { path = "../overlay" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["./src/"]
+
+[tool.ty.environment]
+python = ".venv"  # Relative path to your venv root

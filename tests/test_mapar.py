@@ -1,49 +1,68 @@
+import collections
+import dxcam
+from dataclasses import dataclass
+import typing
 from packaging import version
 import logging
-from mapar import *
-from mapar.snail import *
+from mapar import (
+    MapParser
+)
+from mapar.snail import (
+    Snail,
+    SnailWindowMode
+)
 import ahk as autohotkey
-import d3dshot_stub as d3dshot
+# import d3dshot_stub as d3dshot
 import time
-import datetime
 import numpy as np
 import cv2
 import cv2 as cv
-import sys, inspect
 from copy import deepcopy
 import pytest
-from pytest import fail
 #from scipy.ndimage import center_of_mass
-from common import *
-import zmq
+# from common import *
+from common import (
+    exit_hotkey,
+    hotkey_handler, DataObject,
+    point2d,
+    Rect, timeout, 
+
+)
+import inspect
 import contextlib
-import json
-import threading
-import multiprocessing, subprocess
-import runpy
-import os, signal
-import queue
+import os
+from overlay import overlay
+from typing import (
+    List,
+    Tuple,
+)
+from npext import npext
+from glob import glob
+from common import grid
+import random
 
 FACTORIO_WINDOW_NAME = 'Factorio'
-AHK_BINARY_PATH = 'D:/portable/ahk/AutoHotkeyU64.exe'
 D3DSHOT_1_0_0 = version.parse('1.0.0')
 
 def millis_now():
     return int(time.time() * 1000)
 
 
-def dump_images(img_var_names: List[str] | str, image_format: str = 'bmp', postfix: str = None):
-    if type(img_var_names) == str:
+def dump_images(img_var_names: List[str] | str, image_format: str = 'bmp', postfix: str | None = None):
+    if isinstance(img_var_names, str):
         img_var_names = list(map(str.strip, img_var_names.split(',')))
 
     
     for var_name in img_var_names:
         dump_image(var_name, image_format, postfix)
 
-def dump_image(img_var_name: str, image_format:str = 'bmp', postfix: str = None):
-    assert type(img_var_name) == str
+
+@typing.no_type_check
+def dump_image(img_var_name: str, image_format:str = 'bmp', postfix: str | None = None):
+    assert isinstance(img_var_name, str)
     assert image_format in ['bmp', 'png', 'jpg', 'jpeg']
-    caller_frame = inspect.currentframe().f_back
+    cf = inspect.currentframe()
+    caller_frame = cf.f_back  
     caller_name = caller_frame.f_code.co_name
     if caller_name == 'dump_images':
         caller_name = inspect.currentframe().f_back.f_back.f_code.co_name
@@ -56,143 +75,29 @@ def dump_image(img_var_name: str, image_format:str = 'bmp', postfix: str = None)
         postfix = f'{img_var_name}'
     else:
         postfix = f'{img_var_name}_{postfix}'
-    if type(img) == np.ndarray:
+    if isinstance(img, np.ndarray):
         cv.imwrite(f'tmp/{caller_name}_{postfix}.{image_format}', img)
-    elif type(img) == npext:
+    elif isinstance(img, npext):
         cv.imwrite(f'tmp/{caller_name}_{postfix}.{image_format}', img.array)
     else:
         raise RuntimeError(f'unexpected type of variable: type({img_var_name}) == {type(img)}')
 
+@typing.no_type_check
 def clear_images():
-    import os, glob
     caller_frame = inspect.currentframe().f_back
     caller_name = caller_frame.f_code.co_name
     for fn in glob.glob(f'tmp/{caller_name}*'):
         os.remove(fn)
-    
-
-@pytest.mark.skip('outdated')
-def test_can_run_and_stop_dxgi_capture_binary():
-    from subprocess import PIPE, Popen
-    from time import sleep, time
-    from os import linesep, path
-    from psutil import pid_exists
-    exe = D3DShot.EXECUTABLE_PATH
-    exe = f'{path.abspath(exe)}'
-
-    p = Popen([exe], stdin=PIPE, stdout=PIPE, text=True)
-    #logging.info(f'start cmd /k {exe}')
-    sleep(75.2)
-    quit_command = 'q' + linesep
-    p.stdin.write(quit_command)
-    p.stdin.flush()
-    o, e = p.communicate()
-    logging.info(f'{o}')
-    t0 = time()
-    timeout = 5.0
-    while p.poll() == None:
-        if (time() - t0) > timeout:
-            # cv.circle(non_ui_img, (vl[9], hl[4]), 3, (0,0,255), 1)
-            raise RuntimeError('timeout')
-        sleep(0.1)
-    # s = p.stdout.read()
-    assert p.poll() == 0
-    assert not pid_exists(p.pid)
-    # logging.info('process outout:')
-    # logging.info(s)
-
-@pytest.mark.skip('outdated')
-def test_can_run_and_stop_dxgi_capture_binary1():
-    from subprocess import PIPE, Popen
-    from time import sleep, time
-    from os import linesep, path
-    from psutil import pid_exists
-    import zmq
-    exe = d3dshot.D3DShot.EXECUTABLE_PATH
-    exe = f'{path.abspath(exe)}'
-    p = Popen([exe], stdin=PIPE, stdout=PIPE, text=True)
-    context = zmq.Context()
-    socket = context.socket(zmq.REQ)
-    socket.connect("tcp://localhost:5556")
-    exit_command = 'exit'
-
-    socket.send_string('echo')
-    reply = socket.recv_string()
-    assert reply == 'echo'
-    sleep(0.5)
-
-    socket.send_string(exit_command)
-    reply = socket.recv_string()
-    assert reply == exit_command
-    socket.close()
-    context.term()
-    timeout = 5.0
-    p.wait(timeout)
-    s, e = p.communicate()
-    logging.info(f'exitcode: {p.returncode}')
-    assert p.returncode == 0
-    assert not pid_exists(p.pid)
-    logging.info('process outout:')
-    logging.info(s)
 
 def test_get_client_rect():
-    ahk = autohotkey.AHK(executable_path='D:/tools/python310/Scripts/AutoHotkey.exe')
+    ahk = autohotkey.AHK(version='v2')
     r = MapParser.get_factorio_client_rect(ahk, FACTORIO_WINDOW_NAME)
+    if r is None:
+        pytest.fail('could not retrieve client rectangle')
     logging.info(f'client rect: {r}')
-    logging.info(f'client rect: {tuple(r.values())}')
-    def non_null_rect(r):
-        r = DataObject(r)
-        return r.width > 0 and r.height > 0
-    assert non_null_rect(r)
+    if r.w == 0 or r.h == 0:
+        pytest.fail('client rectangle area is 0')
 
-def test_dxgi():
-    import dxgi_screen_capture
-    logging.info(dxgi_screen_capture)
-    logging.info(dir(dxgi_screen_capture))
-    x = dxgi_screen_capture.dxgisc()
-    x.Init()
-
-
-def test_get_d3dshot_version():
-    logging.info(f'ver: {d3dshot.__version__}')
-    assert version.parse(d3dshot.__version__)
-
-@pytest.mark.skip('outdated')
-def test_dxgi_capture_stop():
-    window_name = FACTORIO_WINDOW_NAME
-    ahk = autohotkey.AHK()
-    window = ahk.find_window(title=window_name)
-    window_id = int(window.id, 16)
-    window.activate()
-    r = MapParser.get_factorio_client_rect(ahk, window_name)
-    tuple(r.values())
-    robj = DataObject(r)
-    d3d = d3dshot.D3DShot(capture_output=d3dshot.CaptureOutputs.NUMPY, fps=30, roi=Rect(*tuple(r.values())))
-    d3d.capture()
-    time.sleep(1)
-    d3d.stop()
-
-def test_dxgi_capture_get_next_frame_stop():
-    window_name = FACTORIO_WINDOW_NAME
-    ahk = autohotkey.AHK()
-    window = ahk.find_window(title=window_name)
-    window_id = int(window.id, 16)
-    window.activate()
-    r = MapParser.get_factorio_client_rect(ahk, window_name)
-    tuple(r.values())
-    robj = DataObject(r)
-    d3d = d3dshot.D3DShot(capture_output=d3dshot.CaptureOutputs.NUMPY, fps=30, roi=Rect(*tuple(r.values())))
-    try:
-        logging.info('start get next frame')
-        img, t = d3d.wait_next_frame()
-        logging.info('end get next frame')
-        dump_image('img')
-        #cv.imwrite('tmp/test_dxgi_capture_get_next_frame_stop.png', img)
-        logging.info(f'frame number: {t}')
-    except Exception as e:
-        fail(e)
-    finally:
-        d3d.stop()
 
 def test_mapparser_getrate_capture():
     window_name = FACTORIO_WINDOW_NAME
@@ -344,9 +249,6 @@ def test_extract_grid_nodes():
         # logging.info(f'{ds}')
         dump_image('non_ui_img')
 
-
-from common import grid
-import random
 
 @dataclass
 class frame_desc:
@@ -1231,7 +1133,6 @@ def test_benchmark_tracking_ops():
                 roi_img = crop_image(non_ui_img, roi_rect)
             logging.info(f'roi_crop_ms bench time: {elapsed() / n} ms')
 
-from overlay_client import overlay_client
 
 def test_overlay_client_exit_expect_exception():
     with pytest.raises(RuntimeError) as einfo:
@@ -1666,13 +1567,14 @@ def test_get_tooltip1():
                 time.sleep(0.5)
                 im = s.wait_next_frame()
                 # dump_image('im')
-                blobs, stats, msk = translate_calculate_restore(im)
+                im = cv.cvtColor(im, cv.COLOR_BGR2RGB)
+                blobs, stats, msk = translate_calculate_restore(im, factor=0.5)
                 # midpoint = np.array(s.window_rect.wh()) // 2
                 # s.ahk.click(*midpoint, button='R')
                 dump_images('im, msk')
                 if len(blobs) > 0:
                     s.ahk.send('{Shift Down}')
-                    for p in blobs[1]:
+                    for p in blobs[0]:
                         x, y = p[0]
                         s.ahk.click(x, y, button='R')
                     s.ahk.send('{Shift Up}')
@@ -1833,7 +1735,7 @@ def test_get_tooltip1():
 
 
 def test_full_screen():
-    with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, \
+    with overlay_client() as ov, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, \
          exit_hotkey(ahk=s.ahk) as cmd_get, \
          timeout(1000) as is_not_timeout:
         im = s.wait_next_frame()
@@ -1844,6 +1746,59 @@ def test_full_screen():
                 break
             time.sleep(0.010)
 
+def test_overlay():
+    ahk = autohotkey.AHK(version='v2')
+    ahk.start_hotkeys()
+    with overlay() as ov, \
+            exit_hotkey(ahk=ahk) as cmd_get, \
+            timeout(1000) as is_not_timeout:
+        r = MapParser.get_factorio_client_rect(ahk, FACTORIO_WINDOW_NAME)
+        if r is None:
+            pytest.fail('could not get client rectangle')
+        with ov.scene('tst') as s:
+            s.rect(*r.xywh(), (0, 255, 0, 255), 2)
+
+        camera = dxcam.create(
+            backend="dxgi", # default Desktop Duplication backend
+            processor_backend="cv2", # default OpenCV processor
+            output_color="BGR"
+        )
+
+
+        # Single frame (returns numpy array, BGR)
+        
+        # frame = camera.grab(region=r.xywh(), copy=True)
+
+        # Continuous capture loop
+        camera.start(target_fps=60, region=r.xywh())
+        # frame = camera.get_latest_frame()
+        # cv2.imwrite('fr.png', frame)
+
+        t0 = time.monotonic()
+        tfps = collections.deque([0] * 60, maxlen=60)
+        UNITS_PER_SECOND = 1000
+
+        while is_not_timeout():
+            t0fps = time.perf_counter()
+            img = camera.get_latest_frame_view()
+            img1 = cv2.resize(img, None, fx=0.25, fy=0.25)  # ty:ignore[no-matching-overload]
+
+            f, b = cv2.imencode('.png', img1)
+            h, w, _ = img1.shape
+
+            with ov.scene('frame') as ss:
+                ss.image(r.x0, r.y0, w, h, png_bytes=b.tobytes())
+            dtfps = int((time.perf_counter() - t0fps) * UNITS_PER_SECOND)
+            tfps.appendleft(dtfps)
+            with ov.scene('hud') as hud:
+                t = time.monotonic() - t0
+                fps = len(tfps) * UNITS_PER_SECOND / sum(tfps)
+                ft = f'{t:6.3f}, FPS = {fps:06.1f}'
+                hud.text(40, 80, ft, (0, 255, 0, 255), "JetBrainsMono NFM", 10)
+            if cmd_get() == 'exit':
+                break
+            time.sleep(0.05)
+        ahk.stop_hotkeys()
 
 def test_hotkeys():
     with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
@@ -1879,3 +1834,4 @@ def test_whisper():
             logging.info(result["text"])
             t = elapsed()
             logging.info(f'transcribe elapsed {t} ms')
+

@@ -64,7 +64,7 @@ class Rect:
     def top_segment(self):
         return Segment(self.x0, self.x0 + self.w)
     
-    def xywh(self):
+    def xywh(self) -> Tuple[int, int, int, int]:
         return (self.x0, self.y0, self.w, self.h)
     
     def xyxy(self):
@@ -126,7 +126,7 @@ class Rect:
         return Rect(x - w, y, w, h)
 
 
-def crop_image(img: np.ndarray, r: Rect, debug = False) -> np.ndarray:
+def crop_image(img: np.ndarray, r: Rect) -> np.ndarray:
     """
     Crops a part of an image using a rectangle defined by the top-left corner, width, and height.
     If the rectangle goes beyond the image boundaries, it will be truncated.
@@ -138,7 +138,4 @@ def crop_image(img: np.ndarray, r: Rect, debug = False) -> np.ndarray:
     y0 = max(0, r.y0)
     x1 = min(img.shape[1], r.x0 + r.w)
     y1 = min(img.shape[0], r.y0 + r.h)
-    if debug:
-        return img[y0:y1, x0:x1].copy(), (x0, y0), (x1, y1)
-    else:
-        return img[y0:y1, x0:x1].copy()
+    return img[y0:y1, x0:x1].copy()

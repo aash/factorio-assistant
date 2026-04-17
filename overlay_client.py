@@ -10,7 +10,8 @@ import struct
 import threading
 import queue
 
-SERVER_MODULE_NAME = 'overlay_server'
+# SERVER_MODULE_NAME = 'overlay_server'
+SERVER_MODULE_NAME = 'src/main1'
 MAX_IMG_SZ = 1024 * 1024 * 10
 SERVER_ADDRESS = '127.0.0.1:5123'
 SHMEM_NAME = 'overlay_image_buffer'
@@ -45,7 +46,8 @@ async def send_stop(reader: StreamReader, writer: StreamWriter):
 
 
 async def overlay_client_async(command_queue: queue.Queue, args):
-    proc = await asyncio.subprocess.create_subprocess_exec('python.exe', f'{SERVER_MODULE_NAME}.py', *args)
+    # proc = await asyncio.subprocess.create_subprocess_exec('python.exe', f'{SERVER_MODULE_NAME}.py', *args)
+    proc = await asyncio.subprocess.create_subprocess_exec('uv.exe', 'run', 'python', f'{SERVER_MODULE_NAME}.py', *args)
     shma = shm.SharedMemory(name=SHMEM_NAME, create=True, size=MAX_IMG_SZ)
     host, port = SERVER_ADDRESS.split(':')
     port = int(port)

@@ -74,7 +74,7 @@ class Snail:
 
     def __init__(self, window_mode = SnailWindowMode.WINDOWED):
         window_name = self.FACTORIO_WINDOW_NAME
-        self.ahk = autohotkey.AHK()
+        self.ahk = autohotkey.AHK(version='v2')
         self.window_mode = window_mode
         if self.window_mode == SnailWindowMode.WINDOWED:
             self.ahk.set_coord_mode('Mouse', 'Client')
