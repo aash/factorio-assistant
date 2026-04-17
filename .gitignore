@@ -1,16 +1,18 @@
 
 D3DShot/
-D3DShot/**
-D3DShot/*
 ultralytics/
-out/**
-spleeter_test/**
-spes_artifacts/**
-pretrained_models/**
-test-imgs/**
+out/
+spleeter_test/
+spes_artifacts/
+pretrained_models/
+test-imgs/
 .vscode/**
 __pycache__
-tmp/**
+tmp/
 best.pt
-logs/**
+logs/
 experiments/tmp
+best.pt
+pretrained_models/
+logs/
+
