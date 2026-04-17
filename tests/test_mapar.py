@@ -1735,7 +1735,7 @@ def test_get_tooltip1():
 
 
 def test_full_screen():
-    with overlay_client() as ov, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, \
+    with overlay() as ov, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, \
          exit_hotkey(ahk=s.ahk) as cmd_get, \
          timeout(1000) as is_not_timeout:
         im = s.wait_next_frame()
@@ -1799,39 +1799,3 @@ def test_overlay():
                 break
             time.sleep(0.05)
         ahk.stop_hotkeys()
-
-def test_hotkeys():
-    with overlay_client() as ovl_show_img, Snail(window_mode=SnailWindowMode.FULL_SCREEN) as s, exit_hotkey(ahk=s.ahk) as cmd_get, \
-         hotkey_handler('^1', 'mark_ghosts', ahk=s.ahk) as mark_ghosts, \
-         hotkey_handler('^2', 'deploy', ahk=s.ahk) as deploy, \
-         hotkey_handler('^3', 'snapshot', ahk=s.ahk) as snapshot, \
-         hotkey_handler('^4', 'grid_snapshot', ahk=s.ahk) as grid_snapshot, \
-        timeout(1000) as is_not_timeout:
-        s.ahk.start_hotkeys()
-        while is_not_timeout():
-            if cmd_get() == 'exit':
-                break
-            time.sleep(0.05)
-        s.ahk.stop_hotkeys()
-
-
-def test_hotkeys():
-    ahk = autohotkey.AHK()
-    ahk.start_hotkeys()
-    with overlay_client() as ovl_show_img, exit_hotkey(ahk=ahk) as cmd_get, timeout(1000000) as is_not_timeout:
-        while is_not_timeout():
-            if cmd_get() == 'exit':
-                break
-    ahk.stop_hotkeys()
-
-def test_whisper():
-
-    import whisper
-    model = whisper.load_model(".en")
-    for i in range(3):
-        with timer_ms() as elapsed:
-            result = model.transcribe("g:/rec.ogg", language='en', task="transcribe")
-            logging.info(result["text"])
-            t = elapsed()
-            logging.info(f'transcribe elapsed {t} ms')
-
