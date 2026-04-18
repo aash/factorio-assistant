@@ -1,5 +1,5 @@
 from PIL import Image
-from typing import List, Tuple
+from typing import List, Tuple, Optional, NoReturn
 #from scipy.ndimage import center_of_mass
 import logging
 import ahk as autohotkey
@@ -15,13 +15,25 @@ import yaml
 import os
 from box import Box
 from pathlib import Path
+import win32gui  # ty:ignore[unresolved-import]
 
 
 from contextlib import contextmanager
 WIDGET_MINIMUM_AREA = 50 * 50
 
 
-def wh2str(wh: Tuple[int]) -> str:
+def get_factorio_client_rect(ahk: autohotkey.AHK, window_name: str) -> Rect | None:
+    window = ahk.find_window(title=window_name)
+    if window is None:
+        return None
+    window_id = int(window.id)
+    client_area_zero = win32gui.ClientToScreen(window_id, (0,0))
+    cr = win32gui.GetClientRect(window_id)
+    client_rect_dict = Rect(client_area_zero[0], client_area_zero[1], cr[2], cr[3])
+    return client_rect_dict
+
+
+def wh2str(wh: Tuple[int, int]) -> str:
     return f'{wh[0]}x{wh[1]}'
 
 def get_bounding_rects(f0, f1) -> List[Rect]:
@@ -49,6 +61,10 @@ def get_bounding_rects(f0, f1) -> List[Rect]:
             res.append(rect)
     return res
 
+def log_and_raise(msg: str, exc: type[RuntimeError] = RuntimeError) -> NoReturn:
+    logging.error(msg)
+    raise exc(msg)
+
 
 class WidgetType(Enum):
 
@@ -73,17 +89,21 @@ class Snail:
     COLOR_GREEN = (0, 255, 0)
 
     def __init__(self, window_mode = SnailWindowMode.WINDOWED):
-        window_name = self.FACTORIO_WINDOW_NAME
         self.ahk = autohotkey.AHK(version='v2')
         self.window_mode = window_mode
         if self.window_mode == SnailWindowMode.WINDOWED:
-            self.ahk.set_coord_mode('Mouse', 'Client')
-            self.window = self.ahk.find_window(title=window_name)
-            self.window_id = int(self.window.id, 16)
+            self.ahk.set_coord_mode('Mouse', 'Screen')
+            self.window = self.ahk.find_window(title=self.FACTORIO_WINDOW_NAME)
+            if self.window is None:
+                log_and_raise('game window is not found')
+            rect = get_factorio_client_rect(self.ahk, self.FACTORIO_WINDOW_NAME)
+            if rect is None:
+                log_and_raise(f'could not get `{self.window.get_title()}` window client area rectangle')
+            self.window_id = int(self.window.id)
+            self.window_rect = rect
             self.window.activate()
-            robj = DataObject(MapParser.get_factorio_client_rect(self.ahk, window_name))
-            self.window_rect = Rect(robj.x, robj.y, robj.width, robj.height)
         else:
+            raise RuntimeError('mode is not supported')
             self.ahk.set_coord_mode('Mouse', 'Screen')
             self.window = None
             self.window_id = None
@@ -131,10 +151,11 @@ class Snail:
             else:
                 self.char_offset = None
         self.ahk.start_hotkeys()
-        time.sleep(0.5)
+        time.sleep(0.1)
         return self
 
     def __exit__(self, *exc_details):
+        self.ahk.clear_hotkeys()
         self.ahk.stop_hotkeys()
         time.sleep(0.1)
         logging.info('Stopping snail')
@@ -144,7 +165,7 @@ class Snail:
         self.config.char_location = {'3840x2160': '1921,1081',
             '1920x1080': '960,541'}
         self.config.to_yaml(self.CONFIG_FILE)
-        del self.ahk
+        logging.info('write config to disk')
 
     def get_diff_image(self, action, initialize = None, finalize = None, roi = None):
 
@@ -154,9 +175,9 @@ class Snail:
         '''
         if initialize:
             initialize()
-        im1, _ = self.dxgi_dxcam_device.get_latest_frame()
+        im1, _ = self.wait_next_frame()
         action()
-        im2, _ = self.dxgi_dxcam_device.get_latest_frame()
+        im2, _ = self.wait_next_frame()
         if finalize:
             finalize()
         return im1, im2
@@ -191,17 +212,23 @@ class Snail:
         brect = next(f, None)
         return brect
     
-    def wait_next_frame(self, roi: Rect = None) -> np.ndarray:
+    def wait_next_frame(self, roi: Optional[Rect] = None) -> np.ndarray:
         if roi is not None:
             raise RuntimeError('unsupported argument')
-        f, *_ = self.dxgi_dxcam_device.get_latest_frame()
-        return f
+        f = self.dxgi_dxcam_device.get_latest_frame()
+        if f is not None:
+            return f
+        else:
+            raise RuntimeError('no frame data')
 
-    def wait_next_frame_with_time(self, roi: Rect = None):
+    def wait_next_frame_with_time(self, roi: Optional[Rect] = None) -> Tuple[np.ndarray, float]:
         if roi is not None:
             raise RuntimeError('unsupported argument')
-        f, t = self.dxgi_dxcam_device.get_latest_frame(with_timestamp=True)
-        return f, t
+        r = self.dxgi_dxcam_device.get_latest_frame(with_timestamp=True)
+        if r is not None:
+            return r
+        else:
+            raise RuntimeError('no frame data')
     
     def ensure_next_frame(self):
         im = None

@@ -40,3 +40,4 @@ def dpi_to_scale_ratio(dpi):
     if len(dpi) != 2 or dpi[0] != dpi[1]:
         raise RuntimeError(f'non conformant DPI:{dpi[0]}x{dpi[1]}')
     return dpi[0] / STANDARD_DPI
+
