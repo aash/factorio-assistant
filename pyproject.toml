@@ -22,6 +22,7 @@ dependencies = [
     "pyzmq>=27.1.0",
     "qasync>=0.28.0",
     "rapidshot>=1.1.0",
+    "ruff>=0.15.11",
     "scikit-image>=0.26.0",
     "ty>=0.0.29",
     "zmq>=0.0.0",
