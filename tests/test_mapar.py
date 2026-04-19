@@ -1754,8 +1754,12 @@ def test_overlay():
         # r = MapParser.get_factorio_client_rect(ahk, FACTORIO_WINDOW_NAME)
         # if r is None:
         #     pytest.fail('could not get client rectangle')
+        
         with ov.scene('tst') as s:
             s.rect(*r.xywh(), pen_color=(0, 255, 0, 255), pen_width=2)
+            # s.rect(*snail.non_ui_rect.moved(r.x0, r.y0).xywh(), pen_color=(0, 255, 0, 255), pen_width=1)
+            for uir in snail.ui_brects:
+                s.rect(*uir.moved(r.x0, r.y0).xywh(), pen_color=(0, 255, 0, 255), pen_width=1)
 
         # camera = dxcam.create(
         #     backend="dxgi", # default Desktop Duplication backend

@@ -112,7 +112,7 @@ class Snail:
             cfg_file.touch()
         self.config = Box.from_yaml(filename=self.CONFIG_FILE)
         self._dxgi_backend = "dxcam"
-        self.dxgi_fps = 30
+        self.dxgi_fps = 120
         self.debug_ui_rect = None
 
     def __enter__(self):
@@ -186,16 +186,24 @@ class Snail:
         sleep_time = default_delay
         def initialize():
             time.sleep(sleep_time)
-            self.ahk.mouse_move(1, 1)
+            # logging.info('init 111')
+            self.ahk.mouse_move(*self.window_rect.center())
             time.sleep(sleep_time)
         def action():
-            self.ahk.send_input(f'{{WheelUp {it_count}}}', blocking=True)
+            # self.ahk.send_input(f'{{WheelUp {it_count}}}', blocking=True)
+            # logging.info('action 111')
+            self.ahk.send_input(r'^{F9}', blocking=True)
             time.sleep(sleep_time)
         def finalize():
-            self.ahk.send_input(f'{{WheelDown {it_count}}}', blocking=True)
+            # self.ahk.send_input(f'{{WheelDown {it_count}}}', blocking=True)
+            # logging.info('finalize 111')
+            self.ahk.send_input(r'{F9}', blocking=True)
         im0, im1 = self.get_diff_image(action, initialize, finalize)
-        brects = get_bounding_rects(im0, im1)
-        return brects, im0, im1
+        self.ui_brects = get_bounding_rects(im0, im1)
+        # cv2.imwrite('brects_im0.png', im0)
+        # cv2.imwrite('brects_im1.png', im1)
+        logging.info(f'{self.ui_brects}')
+        return self.ui_brects, im0, im1
     
     def get_widget_brects1(self):
         self.ahk.mouse_move(1, 1)

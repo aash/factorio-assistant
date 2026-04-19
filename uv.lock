@@ -512,7 +512,7 @@ wheels = [
 
 [[package]]
 name = "overlay"
-version = "0.1.4"
+version = "0.1.5"
 source = { directory = "../overlay" }
 dependencies = [
     { name = "ipython" },
