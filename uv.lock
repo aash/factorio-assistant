@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -12,6 +12,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/87/80/0ecedbb6dfa2540b9aeda5ff07a3e4274339a4707aa36af16a8e2a86308d/ahk-1.8.4.tar.gz", hash = "sha256:675f864a7818361925592dc876fe7ac046d18eafef72a9ce7b2c19179b8d96ab", size = 133742, upload-time = "2025-04-02T19:46:48.193Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/aa/9f/4455c53091281eb36b70acaca4d6e2944be6624900916b97038f5cff1457/ahk-1.8.4-py3-none-any.whl", hash = "sha256:4f31b77f94a6156302c3d155fad52f010e4e7eeaa7148606d1415a1f98f3a739", size = 124871, upload-time = "2025-04-02T19:46:46.843Z" },
+]
+
+[package.optional-dependencies]
+binary = [
+    { name = "ahk-binary" },
+]
+
+[[package]]
+name = "ahk-binary"
+version = "2023.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/ef/1ef1a9c6dfd7ec2d4347989383f33deaf90d90e4db5859c0ce4a54d7890c/ahk-binary-2023.9.0.tar.gz", hash = "sha256:87ea7fb27e09854fea33b13f0d363a56fb4ae2950bf7b2cca9f64f3d2f685f6d", size = 1260112, upload-time = "2023-09-20T23:34:37.355Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/27/9255a88e9a35e0c6e839e1fda33b4016cdee7f9c5c757f23912d1bf5532f/ahk_binary-2023.9.0-py3-none-any.whl", hash = "sha256:7240821ac64930c8610e7aee04b43ca772bb0e65136f37aab9f54ac1475b8743", size = 1268137, upload-time = "2023-09-20T23:34:35.406Z" },
 ]
 
 [[package]]
@@ -152,7 +166,7 @@ name = "factorio-assistant"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "ahk" },
+    { name = "ahk", extra = ["binary"] },
     { name = "dxcam", extra = ["cv2", "winrt"] },
     { name = "ipython" },
     { name = "msgpack" },
@@ -176,7 +190,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ahk", specifier = ">=1.8.4" },
+    { name = "ahk", extras = ["binary"], specifier = ">=1.8.4" },
     { name = "dxcam", extras = ["cv2", "winrt"], specifier = ">=0.3.0" },
     { name = "ipython", specifier = ">=9.12.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
