@@ -3,7 +3,6 @@ from typing import List, Tuple, Optional, NoReturn
 #from scipy.ndimage import center_of_mass
 import logging
 import ahk as autohotkey
-from mapar import MapParser
 import dxcam
 from common import * 
 import cv2 as cv
@@ -175,9 +174,9 @@ class Snail:
         '''
         if initialize:
             initialize()
-        im1, _ = self.wait_next_frame()
+        im1 = self.wait_next_frame()
         action()
-        im2, _ = self.wait_next_frame()
+        im2 = self.wait_next_frame()
         if finalize:
             finalize()
         return im1, im2

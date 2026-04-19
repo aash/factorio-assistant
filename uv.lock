@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 
 [[package]]
@@ -498,9 +498,10 @@ wheels = [
 
 [[package]]
 name = "overlay"
-version = "0.1.1"
+version = "0.1.4"
 source = { directory = "../overlay" }
 dependencies = [
+    { name = "ipython" },
     { name = "msgpack" },
     { name = "numpy" },
     { name = "opencv-python" },
@@ -512,6 +513,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ipython", specifier = ">=9.12.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },

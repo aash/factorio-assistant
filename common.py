@@ -247,7 +247,7 @@ def remove_small_features(binary_image, min_area):
     return output_image
 
 @contextlib.contextmanager
-def exit_hotkey(key = '^q', ahk: autohotkey.AHK = autohotkey.AHK(version='v2')):
+def exit_hotkey(ahk: autohotkey.AHK, key = '^q'):
     q = queue.Queue()
     ahk.add_hotkey(key, lambda: q.put('exit'), logging.info('exit hotkey handler'))
     def get_command():
@@ -257,9 +257,10 @@ def exit_hotkey(key = '^q', ahk: autohotkey.AHK = autohotkey.AHK(version='v2')):
             return cmd
         return None
     yield get_command
+    ahk.remove_hotkey(key)
 
 @contextlib.contextmanager
-def hotkey_handler(key, cmd, ahk: autohotkey.AHK = autohotkey.AHK(version='v2')):
+def hotkey_handler(ahk: autohotkey.AHK, key, cmd):
     q = queue.Queue()
     logging.info(f'adding new hotkey {key} {cmd}')
     ahk.add_hotkey(key, lambda: q.put(cmd), logging.info(f"{cmd} command triggered"))
@@ -270,6 +271,7 @@ def hotkey_handler(key, cmd, ahk: autohotkey.AHK = autohotkey.AHK(version='v2'))
             return cmd
         return None
     yield get_command
+    ahk.remove_hotkey(key)
 
 @dataclass
 class point2d:

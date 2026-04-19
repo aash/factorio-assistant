@@ -4,9 +4,6 @@ from dataclasses import dataclass
 import typing
 from packaging import version
 import logging
-from mapar import (
-    MapParser
-)
 from mapar.snail import (
     Snail,
     SnailWindowMode
@@ -1747,22 +1744,24 @@ def test_full_screen():
             time.sleep(0.010)
 
 def test_overlay():
-    ahk = autohotkey.AHK(version='v2')
-    ahk.start_hotkeys()
+    # ahk = autohotkey.AHK(version='v2')
+    # ahk.start_hotkeys()
     with overlay() as ov, \
-            exit_hotkey(ahk=ahk) as cmd_get, \
+            Snail() as snail, \
+            exit_hotkey(ahk=snail.ahk) as cmd_get, \
             timeout(1000) as is_not_timeout:
-        r = MapParser.get_factorio_client_rect(ahk, FACTORIO_WINDOW_NAME)
-        if r is None:
-            pytest.fail('could not get client rectangle')
+        r = snail.window_rect
+        # r = MapParser.get_factorio_client_rect(ahk, FACTORIO_WINDOW_NAME)
+        # if r is None:
+        #     pytest.fail('could not get client rectangle')
         with ov.scene('tst') as s:
-            s.rect(*r.xywh(), (0, 255, 0, 255), 2)
+            s.rect(*r.xywh(), pen_color=(0, 255, 0, 255), pen_width=2)
 
-        camera = dxcam.create(
-            backend="dxgi", # default Desktop Duplication backend
-            processor_backend="cv2", # default OpenCV processor
-            output_color="BGR"
-        )
+        # camera = dxcam.create(
+        #     backend="dxgi", # default Desktop Duplication backend
+        #     processor_backend="cv2", # default OpenCV processor
+        #     output_color="BGR"
+        # )
 
 
         # Single frame (returns numpy array, BGR)
@@ -1770,7 +1769,7 @@ def test_overlay():
         # frame = camera.grab(region=r.xywh(), copy=True)
 
         # Continuous capture loop
-        camera.start(target_fps=60, region=r.xywh())
+        # camera.start(target_fps=60, region=r.xywh())
         # frame = camera.get_latest_frame()
         # cv2.imwrite('fr.png', frame)
 
@@ -1780,8 +1779,9 @@ def test_overlay():
 
         while is_not_timeout():
             t0fps = time.perf_counter()
-            img = camera.get_latest_frame_view()
-            img1 = cv2.resize(img, None, fx=0.25, fy=0.25)  # ty:ignore[no-matching-overload]
+            # img = camera.get_latest_frame_view()
+            img = snail.wait_next_frame()
+            img1 = cv2.resize(img, None, fx=0.25, fy=0.25)
 
             f, b = cv2.imencode('.png', img1)
             h, w, _ = img1.shape
@@ -1797,5 +1797,5 @@ def test_overlay():
                 hud.text(40, 80, ft, (0, 255, 0, 255), "JetBrainsMono NFM", 10)
             if cmd_get() == 'exit':
                 break
-            time.sleep(0.05)
-        ahk.stop_hotkeys()
+            # time.sleep(0.05)
+        # ahk.stop_hotkeys()
