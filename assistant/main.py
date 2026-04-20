@@ -1,3 +1,4 @@
+import logging
 from assistant.actions import action_decorator
 import cv2
 import collections
@@ -8,8 +9,9 @@ from mapar import Snail
 from overlay import overlay
 from assistant import input_hook
 from assistant import key_capture_window
-from assistant import ACTIONS, fuzzy_match, execute_action, ActionContext, register_actions
+from assistant import fuzzy_match, execute_action, ActionContext, register_actions, get_actions
 import argparse
+from graphics import crop_image
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -69,6 +71,18 @@ def draw_command_palette(ov, query, results, selected_idx, screen_rect):
                    color=text_color, font="JetBrainsMono NFM", size=10)
 
 
+@action_decorator(name="take_window_screenshot", desc="Takes screenshot of window's full client area and saves it in the root directory")
+def take_window_screenshot(ctx: ActionContext):
+    img = ctx.snail.wait_next_frame()
+    cv2.imwrite('screen.png', img)
+
+@action_decorator(name="take_non_ui_screenshot", desc="Takes screenshot of non UI detected area and saves it in the root directory")
+def take_screenshot(ctx: ActionContext):
+    img = ctx.snail.wait_next_frame()
+    non_ui_img = crop_image(img, ctx.snail.non_ui_rect)
+    cv2.imwrite('screen_non_ui.png', non_ui_img)
+
+
 def main():
 
     parser = argparse.ArgumentParser()
@@ -123,27 +137,29 @@ def main():
                 submitted = False
                 with key_capture_window() as (app, cap_win), \
                         input_hook() as key_queue:
-                    results = fuzzy_match(query, ACTIONS)
+                    results = fuzzy_match(query, get_actions())
                     draw_command_palette(ov, query, results, selected_idx, r.xywh())
                     done = False
+                    selected_idx_final = 0
                     while not done:
-                        while True:
+                        while not submitted:
                             try:
                                 event = key_queue.get_nowait()
                             except Empty:
                                 break
                             etype = event["type"]
                             value = event["value"]
-                            if etype == "char":
+                            if etype == "char" and value != '':
                                 query += value
                                 selected_idx = 0
-                            elif etype == "down":
+                            elif etype == "up":
                                 if value == 'Backspace':
                                     query = query[:-1]
                                     selected_idx = 0
                                 elif value == 'Enter':
                                     submitted = True
                                     done = True
+                                    selected_idx_final = selected_idx
                                 elif value == 'Escape':
                                     query = ""
                                     done = True
@@ -153,13 +169,13 @@ def main():
                                 elif value == 'Down':
                                     if selected_idx < len(results) - 1:
                                         selected_idx += 1
-                            results = fuzzy_match(query, ACTIONS)
+                            results = fuzzy_match(query, get_actions())
                             draw_command_palette(ov, query, results, selected_idx, r.xywh())
                         app.processEvents()
                         time.sleep(0.016)
                 ov.destroy_scene('input')
                 if submitted and results:
-                    action = results[min(selected_idx, len(results) - 1)]
+                    action = results[min(selected_idx_final, len(results) - 1)]
                     input_queue.append(action["name"])
                     query_arg = query.lstrip(action["name"]).strip()
                     args = [query_arg] if query_arg else []

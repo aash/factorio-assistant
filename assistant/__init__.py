@@ -5,7 +5,8 @@ from .actions import (
     execute_action,
     ActionContext,
     register_actions,
-    ACTIONS
+    get_action,
+    get_actions,
 )
 
 __all__ = (
@@ -15,6 +16,7 @@ __all__ = (
     'fuzzy_match',
     'execute_action',
     'ActionContext',
-    'register_actions',
-    'ACTIONS'
+    'register_actions'
+    'get_action',
+    'get_actions',
 )

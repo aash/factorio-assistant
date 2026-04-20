@@ -157,11 +157,4 @@ def clear(ctx: ActionContext):
     ov.destroy_scene('action_rect')
     ov.destroy_scene('action_ellipse')
     ov.destroy_scene('action_text')
-
-
-def get_ACTION_LIST() -> list[dict]:
-    return get_actions()
-
-
-ACTIONS = get_ACTION_LIST()
             

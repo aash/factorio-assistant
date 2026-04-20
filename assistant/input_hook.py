@@ -102,7 +102,7 @@ def input_hook() -> Generator[Queue[dict], None, None]:
     OnKeyUp handles all key releases.
     """
     ahk = AHK(version="v2")
-    exe_path = ahk._transport._executable_path
+    exe_path = ahk._transport._executable_path  # ty:ignore[unresolved-attribute]
     pipe_name = f"\\\\.\\pipe\\ahk_input_hook_{os.getpid()}"
 
     ahk_script = (
