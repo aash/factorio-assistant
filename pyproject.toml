@@ -38,7 +38,10 @@ vc = { path = ".", editable = true }
 overlay = { path = "../overlay" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["./src/"]
+packages = ["./assistant/"]
 
 [tool.ty.environment]
 python = ".venv"  # Relative path to your venv root
+
+[project.scripts]
+assistant = "assistant.__main__:main"

@@ -68,5 +68,3 @@ def main():
                 hud.text(40, 80, ft, (0, 255, 0, 255), "JetBrainsMono NFM", 10)
             if cmd_get() == 'exit':
                 break
-            # time.sleep(0.05)
-        # ahk.stop_hotkeys()
