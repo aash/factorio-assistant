@@ -15,4 +15,6 @@ experiments/tmp
 best.pt
 pretrained_models/
 logs/
-config.yaml
+
+
+./config.yaml
