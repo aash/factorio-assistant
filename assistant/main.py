@@ -7,12 +7,18 @@ from mapar import Snail
 from overlay import overlay
 from assistant import input_hook
 from assistant import key_capture_window
+from assistant import ACTIONS, fuzzy_match, execute_action
 import argparse
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
 HISTORY_MARGIN = 10
 HISTORY_BG_ALPHA = 160
+INPUT_BOX_H = 28
+RESULT_LINE_H = 22
+RESULT_MARGIN = 8
+MAX_VISIBLE_RESULTS = 8
+
 
 def draw_history(ov, input_queue, screen_rect):
     x0, y0, w, h = screen_rect
@@ -32,18 +38,35 @@ def draw_history(ov, input_queue, screen_rect):
             s.text(x0 + margin * 2, ty, msg,
                    color=(220, 220, 220, 255), font="JetBrainsMono NFM", size=10)
 
-def draw_input(ov, text, screen_rect):
+
+def draw_command_palette(ov, query, results, selected_idx, screen_rect):
     x0, y0, w, h = screen_rect
-    box_x = x0 + 20
-    box_y = y0 + 20
-    box_w = w - 40
-    box_h = 30
+    pad = 20
+    box_x = x0 + pad
+    box_y = y0 + pad
+    box_w = w - 2 * pad
+    num_results = min(len(results), MAX_VISIBLE_RESULTS)
+    results_h = num_results * RESULT_LINE_H if num_results else 0
+    total_h = INPUT_BOX_H + RESULT_MARGIN + results_h + RESULT_MARGIN if num_results else INPUT_BOX_H + RESULT_MARGIN
+
     with ov.scene('input') as s:
-        s.rect(box_x, box_y, box_w, box_h,
-               pen_color=(100, 150, 255, 200), pen_width=2,
-               brush_color=(20, 20, 40, 200))
-        s.text(box_x + 10, box_y + box_h - 7, text,
-               color=(255, 255, 255, 255), font="JetBrainsMono NFM", size=14)
+        s.rect(box_x, box_y, box_w, total_h,
+                pen_color=(100, 150, 255, 220), pen_width=2,
+                brush_color=(20, 20, 40, 220))
+        cursor = query + "|"
+        s.text(box_x + 10, box_y + INPUT_BOX_H - 6, cursor,
+               color=(255, 255, 255, 255), font="JetBrainsMono NFM", size=10)
+
+        for i, action in enumerate(results[:MAX_VISIBLE_RESULTS]):
+            ry = box_y + INPUT_BOX_H + RESULT_MARGIN + i * RESULT_LINE_H
+            is_sel = (i == selected_idx)
+            if is_sel:
+                s.rect(box_x + 4, ry, box_w - 8, RESULT_LINE_H,
+                        pen_color=None, brush_color=(60, 90, 160, 160))
+            text_color = (255, 255, 255, 255) if is_sel else (180, 180, 180, 200)
+            s.text(box_x + 14, ry + RESULT_LINE_H - 5, action["name"],
+                   color=text_color, font="JetBrainsMono NFM", size=10)
+
 
 def main():
 
@@ -79,7 +102,7 @@ def main():
 
             with ov.scene('frame') as ss:
 
-                ss.image(r.x0, r.y0, w, h, png_bytes=memoryview(b))
+                ss.image(r.x0, r.y0, w, h, png_bytes=memoryview(b))  # ty:ignore[invalid-argument-type]
             dtfps = int((time.perf_counter() - t0fps) * UNITS_PER_SECOND)
             tfps.appendleft(dtfps)
             with ov.scene('hud') as hud:
@@ -93,11 +116,13 @@ def main():
                 break
             icmd = input_cmd_get()
             if icmd == 'input_prompt':
-                input_string = ""
+                query = ""
+                selected_idx = 0
                 submitted = False
                 with key_capture_window() as (app, cap_win), \
                         input_hook() as key_queue:
-                    draw_input(ov, input_string + "|", r.xywh())
+                    results = fuzzy_match(query, ACTIONS)
+                    draw_command_palette(ov, query, results, selected_idx, r.xywh())
                     done = False
                     while not done:
                         while True:
@@ -108,20 +133,31 @@ def main():
                             etype = event["type"]
                             value = event["value"]
                             if etype == "char":
-                                input_string += value
+                                query += value
+                                selected_idx = 0
                             elif etype == "down":
                                 if value == 'Backspace':
-                                    input_string = input_string[:-1]
+                                    query = query[:-1]
+                                    selected_idx = 0
                                 elif value == 'Enter':
                                     submitted = True
                                     done = True
                                 elif value == 'Escape':
-                                    input_string = ""
+                                    query = ""
                                     done = True
-                        draw_input(ov, input_string + "|", r.xywh())
+                                elif value == 'Up':
+                                    if selected_idx > 0:
+                                        selected_idx -= 1
+                                elif value == 'Down':
+                                    if selected_idx < len(results) - 1:
+                                        selected_idx += 1
+                            results = fuzzy_match(query, ACTIONS)
+                            draw_command_palette(ov, query, results, selected_idx, r.xywh())
                         app.processEvents()
                         time.sleep(0.016)
                 ov.destroy_scene('input')
-                if submitted and input_string:
-                    input_queue.append(input_string)
+                if submitted and results:
+                    action = results[min(selected_idx, len(results) - 1)]
+                    input_queue.append(action["name"])
+                    execute_action(action["name"], ov, r.xywh())
                     draw_history(ov, input_queue, r.xywh())
