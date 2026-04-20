@@ -1,3 +1,4 @@
+from assistant.actions import action_decorator
 import cv2
 import collections
 import time
@@ -7,7 +8,7 @@ from mapar import Snail
 from overlay import overlay
 from assistant import input_hook
 from assistant import key_capture_window
-from assistant import ACTIONS, fuzzy_match, execute_action
+from assistant import ACTIONS, fuzzy_match, execute_action, ActionContext, register_actions
 import argparse
 
 HISTORY_MAX = 10
@@ -82,6 +83,7 @@ def main():
 
         input_queue = collections.deque(maxlen=HISTORY_MAX)
         r = snail.window_rect
+        register_actions(snail, ov)
 
         with ov.scene('tst') as s:
             s.rect(*r.xywh(), pen_color=(0, 255, 0, 255), pen_width=2)
@@ -159,5 +161,8 @@ def main():
                 if submitted and results:
                     action = results[min(selected_idx, len(results) - 1)]
                     input_queue.append(action["name"])
-                    execute_action(action["name"], ov, r.xywh())
+                    query_arg = query.lstrip(action["name"]).strip()
+                    args = [query_arg] if query_arg else []
+                    ctx = ActionContext(snail=snail, overlay=ov, args=args)
+                    execute_action(action["name"], ctx)
                     draw_history(ov, input_queue, r.xywh())

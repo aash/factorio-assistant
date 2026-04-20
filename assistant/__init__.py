@@ -3,6 +3,8 @@ from .key_capture import key_capture_window
 from .actions import (
     fuzzy_match,
     execute_action,
+    ActionContext,
+    register_actions,
     ACTIONS
 )
 
@@ -12,5 +14,7 @@ __all__ = (
     'key_capture_window',
     'fuzzy_match',
     'execute_action',
+    'ActionContext',
+    'register_actions',
     'ACTIONS'
 )
