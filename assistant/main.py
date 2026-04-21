@@ -15,6 +15,7 @@ from assistant import fuzzy_match, execute_action, ActionContext, register_actio
 import argparse
 from graphics import crop_image, Rect, blend_translated
 from map_graph import MapGraphBuilder, drop_map_graph
+from map_graph.store import save_composite_image
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -24,6 +25,8 @@ INPUT_BOX_H = 28
 RESULT_LINE_H = 36
 RESULT_MARGIN = 8
 MAX_VISIBLE_RESULTS = 6
+MAP_ANCHOR_X = 40
+MAP_ANCHOR_Y = 140
 
 
 def draw_history(ov, input_queue, screen_rect):
@@ -85,50 +88,10 @@ def draw_command_palette(ov, query, results, selected_idx, screen_rect):
             s.text(box_x + 14, ry + 16 + 8, line,
                    color=text_color, font="JetBrainsMono NFM", size=10)
 
-@action_decorator(name="draw_large_text", desc="Draw large text on overlay")
-def draw_large_text(ctx: ActionContext):
-    ov = ctx.overlay
-    r = ctx.snail.window_rect
-    x0, y0, w, h = r.xywh()
-    cx = x0 + w // 2
-    cy = y0 + h // 2
-    with ov.scene("action_text") as s:
-        s.text(cx - 200, cy, "LARGE TEXT",
-               color=(255, 200, 50, 255), font="JetBrainsMono NFM", size=36, bold=True)
-
-
-@action_decorator(name="draw_ellipse", desc="Draw an ellipse shape")
-def draw_ellipse(ctx: ActionContext):
-    ov = ctx.overlay
-    r = ctx.snail.window_rect
-    x0, y0, w, h = r.xywh()
-    cx = x0 + w // 2
-    cy = y0 + h // 2
-    with ov.scene("action_ellipse") as s:
-        s.ellipse(cx - 120, cy - 80, 240, 160,
-                 pen_color=(0, 200, 255, 220), pen_width=2,
-                 brush_color=(0, 100, 200, 60))
-
-
-@action_decorator(name="draw_rectangle", desc="Draw a rectangle shape")
-def draw_rectangle(ctx: ActionContext):
-    ov = ctx.overlay
-    r = ctx.snail.window_rect
-    x0, y0, w, h = r.xywh()
-    cx = x0 + w // 2
-    cy = y0 + h // 2
-    with ov.scene("action_rect") as s:
-        s.rect(cx - 120, cy - 80, 240, 160,
-              pen_color=(255, 100, 50, 220), pen_width=2,
-              brush_color=(200, 50, 20, 60))
-
 
 @action_decorator(name="clear", desc="Clears overlay", hotkey='^!c')
 def clear(ctx: ActionContext):
     ov = ctx.overlay
-    ov.destroy_scene('action_rect')
-    ov.destroy_scene('action_ellipse')
-    ov.destroy_scene('action_text')
     ov.destroy_scene('map_composite')
 
 @action_decorator(name="take_window_screenshot", desc="Takes screenshot of window's full client area and saves it in the root directory", hotkey="^5")
@@ -221,19 +184,21 @@ def map_capture(ctx: ActionContext):
 
     capture = _map_graph_builder.add_capture(crop)
 
-    if capture.node.coord is not None:
+    if capture.node.status == 'ok' and capture.node.coord is not None:
         _map_tiles.append(crop)
         _map_offsets.append((int(round(capture.node.coord[0])), int(round(capture.node.coord[1]))))
         _map_composite = blend_translated(_map_tiles, _map_offsets)
+        save_composite_image(_map_composite)
 
     logging.info(
-        'map_capture: uid=%s coord=%s time_of_day=%.3f status=%s edges=%d bad=%s',
+        'map_capture: uid=%s coord=%s time_of_day=%.3f status=%s edges=%d bad=%s add_node_ms=%.2f',
         capture.node.uid,
         capture.node.coord,
         capture.node.time_of_day,
         capture.node.status,
         len(capture.edges),
         capture.bad,
+        capture.elapsed_ms,
     )
 
     _draw_map_composite(ctx)
@@ -290,23 +255,58 @@ def toggle_history(ctx: ActionContext):
 
 def _draw_map_composite(ctx):
     if _map_composite is None:
+        ctx.overlay.destroy_scene('map_composite')
         return
-    r = Rect(0, 0, 1920, 1080 * 2) # ctx.snail.window_rect
-    wr, wh = r.w, r.h
-    cr, ch = _map_composite.shape[1], _map_composite.shape[0]
+    r = Rect(0, 0, 1920, 1080*2)# ctx.snail.window_rect
+    min_x = min(dx for dx, _ in _map_offsets) if _map_offsets else 0
+    min_y = min(dy for _, dy in _map_offsets) if _map_offsets else 0
+    origin_x = r.x0 + r.w // 2 + MAP_ANCHOR_X + min_x
+    origin_y = r.y0 + r.h // 2 + MAP_ANCHOR_Y + min_y
 
-    scale = min(wr / cr, wh / ch, 1.0)
-    dw = int(cr * scale)
-    dh = int(ch * scale)
-
-    dx = r.x0 + (wr - dw) // 2
-    dy = r.y0 + (wh - dh) // 2
-
-    display = cv2.resize(_map_composite, (dw, dh), interpolation=cv2.INTER_AREA)
+    display = _map_composite
     _, png = cv2.imencode('.png', display)
+    tile_w = _map_tiles[0].shape[1] if _map_tiles else 0
+    tile_h = _map_tiles[0].shape[0] if _map_tiles else 0
+    edge_color = (0, 255, 0, 120)
+
+    def to_screen(coord):
+        dx, dy = coord
+        return origin_x + (dx - min_x) + tile_w // 2, origin_y + (dy - min_y) + tile_h // 2
 
     with ctx.overlay.scene('map_composite') as s:
-        s.image(dx, dy, dw, dh, png_bytes=memoryview(png))
+        s.image(origin_x, origin_y, display.shape[1], display.shape[0], png_bytes=memoryview(png))
+        if _map_graph_builder is not None:
+            seen_edges = set()
+            for edge in _map_graph_builder.graph.edges:
+                if not edge.accepted:
+                    continue
+                edge_key = tuple(sorted((edge.from_uid, edge.to_uid)))
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                from_node = _map_graph_builder.graph.nodes.get(edge.from_uid)
+                to_node = _map_graph_builder.graph.nodes.get(edge.to_uid)
+                if from_node is None or to_node is None:
+                    continue
+                if from_node.coord is None or to_node.coord is None:
+                    continue
+                x1, y1 = to_screen(from_node.coord)
+                x2, y2 = to_screen(to_node.coord)
+                s.line(x1, y1, x2, y2, color=edge_color, width=1)
+        for dx, dy in _map_offsets:
+            cx = origin_x + (dx - min_x) + tile_w // 2
+            cy = origin_y + (dy - min_y) + tile_h // 2
+            s.line(cx - 7, cy, cx + 7, cy, color=(255, 0, 0, 180), width=3)
+            s.line(cx, cy - 7, cx, cy + 7, color=(255, 0, 0, 180), width=3)
+            s.text(cx - 12+10, cy + 4-10, f'{dx},{dy}',
+                   color=(255, 230, 120, 128), font='JetBrainsMono NFM', size=7)
+
+
+def _reload_map_from_storage(snail, ov):
+    global _map_graph_builder, _map_tiles, _map_offsets, _map_composite
+    _map_graph_builder = MapGraphBuilder()
+    _map_tiles, _map_offsets, _map_composite = _map_graph_builder.load_composite()
+    _draw_map_composite(ActionContext(snail=snail, overlay=ov, args=[]))
 
 
 def main():
@@ -326,6 +326,7 @@ def main():
         _history_queue = input_queue
         r = snail.window_rect
         register_actions(snail, ov)
+        _reload_map_from_storage(snail, ov)
 
 
         t0 = time.monotonic()

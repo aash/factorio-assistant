@@ -8,7 +8,7 @@ from typing import Optional
 class MapNode:
     uid: str
     image_path: str
-    coord: Optional[list[float]] = None
+    coord: Optional[list[int]] = None
     time_of_day: float = 0.0
     timestamp: float = 0.0
     status: str = "ok"
@@ -18,7 +18,7 @@ class MapNode:
 class MapEdge:
     from_uid: str
     to_uid: str
-    offset: list[float]
+    offset: list[int]
     confidence: float
     method_agree: float
     overlap_ratio: float
