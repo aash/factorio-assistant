@@ -14,7 +14,7 @@ from assistant import key_capture_window
 from assistant import fuzzy_match, execute_action, ActionContext, register_actions, get_actions
 import argparse
 from graphics import crop_image, Rect, blend_translated
-from entity_detector import deduce_frame_offset_verified
+from entity_detector import deduce_frame_offset, deduce_frame_offset_verified
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -24,6 +24,11 @@ INPUT_BOX_H = 28
 RESULT_LINE_H = 36
 RESULT_MARGIN = 8
 MAX_VISIBLE_RESULTS = 6
+MOTION_DEMO_SIZE = 400
+MOTION_DEMO_X = 40
+MOTION_DEMO_Y = 420
+MOTION_ARROW_SCALE = 0.08
+MOTION_ARROW_MAX_LEN = 180
 
 
 def draw_history(ov, input_queue, screen_rect):
@@ -130,6 +135,7 @@ def clear(ctx: ActionContext):
     ov.destroy_scene('action_ellipse')
     ov.destroy_scene('action_text')
     ov.destroy_scene('map_composite')
+    ov.destroy_scene('motion_demo')
 
 @action_decorator(name="take_window_screenshot", desc="Takes screenshot of window's full client area and saves it in the root directory", hotkey="^5")
 def take_window_screenshot(ctx: ActionContext):
@@ -152,6 +158,9 @@ _map_cum_offset = None
 _show_ui_brect_marks = False
 _history_queue = None
 _show_history_widget = False
+_motion_demo_enabled = False
+_motion_demo_prev_crop = None
+_motion_demo_prev_ts = None
 
 
 def _ui_brect_label(rect: Rect, window: Rect) -> str:
@@ -170,6 +179,44 @@ def _draw_ui_brect_marks(ov, snail):
             s.rect(x, y, w, h, pen_color=(0, 255, 0, 255), pen_width=1)
             s.text(x + 4, y + 20, _ui_brect_label(abs_rect, r),
                    color=(0, 255, 0, 255), font="JetBrainsMono NFM", size=10)
+
+
+def _draw_motion_demo(ov, crop, velocity, speed):
+    x = MOTION_DEMO_X
+    y = MOTION_DEMO_Y
+    size = MOTION_DEMO_SIZE
+    cx = x + size // 2
+    cy = y + size // 2
+
+    _, png = cv2.imencode('.png', crop)
+
+    with ov.scene('motion_demo') as s:
+        s.rect(x, y, size, size, pen_color=(80, 220, 255, 180), pen_width=2,
+               brush_color=(0, 0, 0, 120))
+        s.image(x, y, size, size, png_bytes=memoryview(png))
+        s.line(cx - 6, cy, cx + 6, cy, color=(255, 255, 255, 220), width=1)
+        s.line(cx, cy - 6, cx, cy + 6, color=(255, 255, 255, 220), width=1)
+
+        vx, vy = float(velocity[0]), float(velocity[1])
+        norm = (vx * vx + vy * vy) ** 0.5
+        if norm > 1e-6:
+            direction_x = vx / norm
+            direction_y = vy / norm
+            arrow_len = min(speed * MOTION_ARROW_SCALE, MOTION_ARROW_MAX_LEN)
+            x2 = cx + direction_x * arrow_len
+            y2 = cy + direction_y * arrow_len
+            head_len = 12
+            head_w = 6
+            px = -direction_y
+            py = direction_x
+            hx = x2 - direction_x * head_len
+            hy = y2 - direction_y * head_len
+            s.line(cx, cy, x2, y2, color=(255, 120, 0, 220), width=2)
+            s.line(x2, y2, hx + px * head_w, hy + py * head_w, color=(255, 120, 0, 220), width=2)
+            s.line(x2, y2, hx - px * head_w, hy - py * head_w, color=(255, 120, 0, 220), width=2)
+
+        s.text(x + 10, y + size - 14, f'vel={speed:5.1f}px/s',
+               color=(255, 255, 255, 230), font='JetBrainsMono NFM', size=10)
 
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
@@ -276,6 +323,17 @@ def toggle_history(ctx: ActionContext):
     logging.info('history widget %s', 'enabled' if _show_history_widget else 'disabled')
 
 
+@action_decorator(name="toggle_motion_demo", desc="Toggle motion arrow demo", hotkey="^!v")
+def toggle_motion_demo(ctx: ActionContext):
+    global _motion_demo_enabled, _motion_demo_prev_crop, _motion_demo_prev_ts
+    _motion_demo_enabled = not _motion_demo_enabled
+    _motion_demo_prev_crop = None
+    _motion_demo_prev_ts = None
+    if not _motion_demo_enabled:
+        ctx.overlay.destroy_scene('motion_demo')
+    logging.info('motion demo %s', 'enabled' if _motion_demo_enabled else 'disabled')
+
+
 def _draw_map_composite(ctx):
     if _map_composite is None:
         return
@@ -298,6 +356,7 @@ def _draw_map_composite(ctx):
 
 
 def main():
+    global _motion_demo_prev_crop, _motion_demo_prev_ts
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-v,--version', help='show version')
@@ -338,6 +397,25 @@ def main():
                 fps = len(tfps) * UNITS_PER_SECOND / sum(tfps)
                 ft = f'{t:6.3f}, FPS = {fps:06.1f}'
                 hud.text(40, 80, ft, (0, 255, 0, 255), "JetBrainsMono NFM", 10)
+
+            if _motion_demo_enabled:
+                demo_dims = numpy.array([MOTION_DEMO_SIZE, MOTION_DEMO_SIZE])
+                demo_cent = r.wh() // 2
+                demo_rr = Rect.from_centdims(*demo_cent, *demo_dims)
+                demo_crop = crop_image(img, demo_rr)
+                now = time.perf_counter()
+                if _motion_demo_prev_crop is not None and _motion_demo_prev_ts is not None:
+                    offset, _ = deduce_frame_offset(_motion_demo_prev_crop, demo_crop)
+                    dt = max(now - _motion_demo_prev_ts, 1e-6)
+                    velocity = offset / dt
+                else:
+                    velocity = numpy.array([0.0, 0.0])
+                speed = float(numpy.linalg.norm(velocity))
+                _draw_motion_demo(ov, demo_crop, velocity, speed)
+                _motion_demo_prev_crop = demo_crop
+                _motion_demo_prev_ts = now
+            else:
+                ov.destroy_scene('motion_demo')
 
             cmd = cmd_get()
             if cmd == 'exit':
