@@ -76,53 +76,76 @@ class Rect:
     def height(self):
         return self.h
     
-    def wh(self):
-        return (self.w, self.h)
+    def wh(self) -> np.ndarray:
+        return np.array((self.w, self.h))
     
     def xy(self):
-        return (self.x0, self.y0)
+        return np.array((self.x0, self.y0))
     
     def sub_rect(self, sub: 'Rect'):
         return Rect(self.x0 + sub.x0, self.y0 + sub.y0, *sub.wh())
     
     def moved(self, dx: int, dy: int):
-        return Rect(self.x0 + dx, self.y0 + dy, *self.wh())
+        return Rect(self.x0 + dx, self.y0 + dy, self.w, self.h)
     
     def __add__(self, other: np.ndarray):
         return Rect(self.x0 + other[0], self.y0 + other[1], self.w, self.h)
     
     def center(self) -> np.ndarray:
         return np.array((self.x0 + self.w // 2, self.y0 + self.h // 2))
-    
+
+    @classmethod
+    def from_centdims(cls, cx, cy, w, h) -> 'Rect':
+        """ Constructs Rect from center point (cx, cy) and dimensions (w, h)
+        """
+        return Rect(cx - w // 2, cy - h // 2, w, h)
+
     @classmethod
     def from_str(cls, s:str) -> 'Rect':
+        """ Constructs Rect from string representation 'x, y, w, h' or 'Rect(x, y, w, h)'
+        """
         assert isinstance(s, str), 'parameter should be str(ing)'
+        if s.startswith('Rect'):
+            # TODO: implement parsing of Rect(a, b, c ,d) strings
+            return Rect(0, 0, 0, 0)
         return Rect(*map(int, s.split(',')))
 
     @classmethod
     def from_ptdm(cls, pt: Tuple, dim: Tuple) -> 'Rect':
+        """ Constructs Rect from top left point pt and dimensions dim
+        """
         return Rect(*pt, *dim)
     
     @classmethod
     def from_xyxy(cls, x0: int, y0: int, x1: int, y1: int) -> 'Rect':
+        """ Constructs Rect from unordered diagonal points (x0, y0) and (x1, y1)
+        """
         p0, p1 = sorted((x0, x1))
         q0, q1 = sorted((y0, y1))
         return Rect(p0, q0, p1 - p0, q1 - q0)
     
     @classmethod
     def from_top_left(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        """ Constructs Rect from top left point (x, y) and dimensions (w, h)
+        """
         return Rect(x, y, w, h)
 
     @classmethod
     def from_bottom_left(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        """ Constructs Rect from bottom left point (x, y) and dimensions (w, h)
+        """
         return Rect(x, y - h, w, h)
 
     @classmethod
     def from_bottom_right(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        """ Constructs Rect from bottom right point (x, y) and dimensions (w, h)
+        """
         return Rect(x - w, y - h, w, h)
 
     @classmethod
     def from_top_right(cls, x: int, y: int, w: int, h: int) -> 'Rect':
+        """ Constructs Rect from top right point (x, y) and dimensions (w, h)
+        """
         return Rect(x - w, y, w, h)
 
 
