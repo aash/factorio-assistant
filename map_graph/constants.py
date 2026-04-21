@@ -1,0 +1,11 @@
+from pathlib import Path
+
+DATA_DIR = Path("data") / "map_graph"
+NODES_DIR = DATA_DIR / "nodes"
+GRAPH_JSON = DATA_DIR / "map_graph.json"
+COMPOSITE_IMAGE = DATA_DIR / "composite.png"
+
+OVERLAP_RATIO_THRESHOLD = 0.6
+OFFSET_CONFIDENCE_THRESHOLD = 0.6
+MAX_NODE_COORD_DISPARITY_PX = 2.0
+NODE_UID_LENGTH = 12
