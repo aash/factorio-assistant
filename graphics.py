@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
+import cv2
 from copy import deepcopy
 from typing import Tuple
 
@@ -162,3 +163,72 @@ def crop_image(img: np.ndarray, r: Rect) -> np.ndarray:
     x1 = min(img.shape[1], r.x0 + r.w)
     y1 = min(img.shape[0], r.y0 + r.h)
     return img[y0:y1, x0:x1].copy()
+
+
+def translate_image(img: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """Translate image by integer (dx, dy) using array slice copy.
+
+    Creates a same-size canvas. Pixels outside the original bounds are filled
+    with zeros. Positive dx shifts content right, positive dy shifts content
+    down.
+
+    Args:
+        img: Input image (any dtype, any number of channels)
+        dx: Horizontal shift in pixels
+        dy: Vertical shift in pixels
+
+    Returns:
+        Translated image of same shape and dtype as input
+    """
+    h, w = img.shape[:2]
+    out = np.zeros_like(img)
+    sx, sy = max(0, dx), max(0, dy)
+    ox, oy = max(0, -dx), max(0, -dy)
+    copy_h = min(h, h + dy) - max(0, dy)
+    copy_w = min(w, w + dx) - max(0, dx)
+    if copy_h <= 0 or copy_w <= 0:
+        return out
+    out[sy:sy + copy_h, sx:sx + copy_w] = img[oy:oy + copy_h, ox:ox + copy_w]
+    return out
+
+
+def blend_translated(images: list, offsets: list) -> np.ndarray:
+    """Blend multiple images at given integer offsets into a single canvas.
+
+    Each image is placed at its (dx, dy) offset relative to the first image
+    (offset[0] is typically (0, 0)). Overlapping pixels are averaged weighted
+    by the number of contributing images.
+
+    Args:
+        images: List of images (same dtype, same height/width)
+        offsets: List of (dx, dy) integer offsets, one per image.
+                 offset[i] is the position of image i's top-left corner
+                 relative to the composite canvas origin.
+
+    Returns:
+        Blended composite image (uint8)
+    """
+    assert len(images) == len(offsets)
+    img_h, img_w = images[0].shape[:2]
+
+    min_x = min(dx for dx, dy in offsets)
+    min_y = min(dy for dx, dy in offsets)
+    max_x = max(dx + img_w for dx, dy in offsets)
+    max_y = max(dy + img_h for dx, dy in offsets)
+
+    canvas_h = max_y - min_y
+    canvas_w = max_x - min_x
+
+    acc = np.zeros((canvas_h, canvas_w, 3), dtype=np.float64)
+    count = np.zeros((canvas_h, canvas_w, 1), dtype=np.float64)
+
+    for img, (dx, dy) in zip(images, offsets):
+        x = dx - min_x
+        y = dy - min_y
+        rgb = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        if rgb.shape[2] == 4:
+            rgb = rgb[:, :, :3]
+        acc[y:y + img_h, x:x + img_w] += rgb.astype(np.float64)
+        count[y:y + img_h, x:x + img_w] += 1
+
+    return (acc / np.maximum(count, 1)).astype(np.uint8)

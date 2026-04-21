@@ -12,6 +12,17 @@ from npext import npext, to_gray, bin_threshold, dilate, erode, gaussian_blur
 
 
 @dataclass
+class OffsetResult:
+    offset: np.ndarray
+    confidence: float
+    phase_corr_offset: np.ndarray
+    phase_corr_response: float
+    sift_offset: Optional[np.ndarray]
+    sift_inlier_frac: float
+    method_agreement_px: float
+
+
+@dataclass
 class EntityBBox:
     top_left: np.ndarray
     bottom_right: np.ndarray
@@ -36,14 +47,13 @@ def deduce_frame_offset(frame1: np.ndarray,
                         ) -> Tuple[np.ndarray, float]:
     """Deduce pixel displacement between two consecutive Factorio frames.
 
-    In Factorio the character stays fixed on screen while the world scrolls.
-    Returns (dx, dy) such that frame2 content ≈ frame1 shifted by (dx, dy).
-    A point at (x, y) in frame1 appears at approximately (x - dx, y - dy)
-    in frame2.
+    Returns (dx, dy) such that frame2 content ≈ frame1 content shifted by
+    (dx, dy). A point at (x, y) in frame1 appears at approximately
+    (x + dx, y + dy) in frame2.
 
-    Uses gradient-phase correlation: Sobel gradients eliminate additive
-    brightness changes (daytime cycle) and the Hann window reduces spectral
-    leakage from image borders.
+    Uses grayscale phase correlation with Hann window. The sign is flipped
+    from cv2.phaseCorrelate so the result directly represents the movement
+    vector of the world content between frames.
 
     Args:
         frame1: Previous frame (BGR, uint8)
@@ -57,33 +67,98 @@ def deduce_frame_offset(frame1: np.ndarray,
     f1 = crop_image(frame1, roi) if roi is not None else frame1
     f2 = crop_image(frame2, roi) if roi is not None else frame2
 
-    g1 = cv2.cvtColor(f1, cv2.COLOR_BGR2GRAY)
-    g2 = cv2.cvtColor(f2, cv2.COLOR_BGR2GRAY)
+    g1 = cv2.cvtColor(f1, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    g2 = cv2.cvtColor(f2, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
-    gx1 = cv2.Sobel(g1, cv2.CV_32F, 1, 0, ksize=3)
-    gy1 = cv2.Sobel(g1, cv2.CV_32F, 0, 1, ksize=3)
-    grad1 = np.sqrt(gx1 * gx1 + gy1 * gy1)
-
-    gx2 = cv2.Sobel(g2, cv2.CV_32F, 1, 0, ksize=3)
-    gy2 = cv2.Sobel(g2, cv2.CV_32F, 0, 1, ksize=3)
-    grad2 = np.sqrt(gx2 * gx2 + gy2 * gy2)
-
-    h, w = grad1.shape
+    h, w = g1.shape
     win = cv2.createHanningWindow((w, h), cv2.CV_32F)
 
-    shift, response = cv2.phaseCorrelate(grad1 * win, grad2 * win)
+    shift, response = cv2.phaseCorrelate(g1 * win, g2 * win)
 
-    dx, dy = float(shift[0]), float(shift[1])
-    if dx > w / 2:
-        dx -= w
-    elif dx < -w / 2:
-        dx += w
-    if dy > h / 2:
-        dy -= h
-    elif dy < -h / 2:
-        dy += h
+    dx, dy = -float(shift[0]), -float(shift[1])
+    if dx > w / 2: dx -= w
+    elif dx < -w / 2: dx += w
+    if dy > h / 2: dy -= h
+    elif dy < -h / 2: dy += h
 
     return np.array([dx, dy]), float(response)
+
+
+def _sift_offset(f1: np.ndarray, f2: np.ndarray) -> Tuple[Optional[np.ndarray], float]:
+    g1 = cv2.cvtColor(f1, cv2.COLOR_BGR2GRAY)
+    g2 = cv2.cvtColor(f2, cv2.COLOR_BGR2GRAY)
+    sift = cv2.SIFT_create(nfeatures=300)
+    kp1, des1 = sift.detectAndCompute(g1, None)
+    kp2, des2 = sift.detectAndCompute(g2, None)
+    if des1 is None or des2 is None or len(des1) < 5 or len(des2) < 5:
+        return None, 0.0
+    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+    matches = bf.match(des1, des2)
+    if len(matches) < 5:
+        return None, 0.0
+    translations = []
+    for m in matches:
+        pt1 = np.array(kp1[m.queryIdx].pt)
+        pt2 = np.array(kp2[m.trainIdx].pt)
+        translations.append(pt1 - pt2)
+    ts = np.array(translations)
+    median_t = np.median(ts, axis=0)
+    deviations = np.sum((ts - median_t) ** 2, axis=1)
+    order = np.argsort(deviations)
+    n_keep = max(5, len(ts) // 2)
+    kept = ts[order[:n_keep]]
+    mean_t = kept.mean(axis=0)
+    return mean_t, n_keep / len(ts)
+
+
+def deduce_frame_offset_verified(frame1: np.ndarray,
+                                  frame2: np.ndarray,
+                                  roi: Optional[Rect] = None
+                                  ) -> OffsetResult:
+    """Deduce pixel displacement with SIFT cross-validation.
+
+    Runs grayscale phase correlation (fast) and SIFT feature matching
+    independently. Agreement between methods indicates reliable offset.
+
+    Args:
+        frame1: Previous frame (BGR, uint8)
+        frame2: Current frame (BGR, uint8)
+        roi: Optional region of interest (avoids UI elements)
+
+    Returns:
+        OffsetResult with offsets from both methods, agreement distance,
+        and overall confidence (0-1).
+    """
+    f1 = crop_image(frame1, roi) if roi is not None else frame1
+    f2 = crop_image(frame2, roi) if roi is not None else frame2
+
+    pc_off, pc_resp = deduce_frame_offset(f1, f2)
+    sift_off, sift_inliers = _sift_offset(f1, f2)
+
+    if sift_off is not None:
+        agreement = float(np.linalg.norm(pc_off - sift_off))
+    else:
+        agreement = float('inf')
+
+    if sift_off is not None and agreement < 3.0:
+        confidence = min(1.0, (1.0 - agreement / 3.0) * 0.4 + min(pc_resp, 1.0) * 0.3 + sift_inliers * 0.3)
+        final_offset = (pc_off + sift_off) / 2
+    elif sift_off is not None and agreement < 10.0:
+        confidence = min(1.0, min(pc_resp, 1.0) * 0.5 + sift_inliers * 0.3 + (1.0 - agreement / 10.0) * 0.2)
+        final_offset = pc_off
+    else:
+        confidence = min(pc_resp, 1.0) * 0.5
+        final_offset = pc_off
+
+    return OffsetResult(
+        offset=final_offset,
+        confidence=confidence,
+        phase_corr_offset=pc_off,
+        phase_corr_response=pc_resp,
+        sift_offset=sift_off,
+        sift_inlier_frac=sift_inliers,
+        method_agreement_px=agreement if sift_off is not None else float('inf'),
+    )
 
 
 def filter_marker_mask(img: np.ndarray,

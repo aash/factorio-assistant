@@ -12,7 +12,8 @@ from assistant import input_hook
 from assistant import key_capture_window
 from assistant import fuzzy_match, execute_action, ActionContext, register_actions, get_actions
 import argparse
-from graphics import crop_image, Rect
+from graphics import crop_image, Rect, blend_translated
+from entity_detector import deduce_frame_offset_verified
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -127,6 +128,7 @@ def clear(ctx: ActionContext):
     ov.destroy_scene('action_rect')
     ov.destroy_scene('action_ellipse')
     ov.destroy_scene('action_text')
+    ov.destroy_scene('map_composite')
 
 @action_decorator(name="take_window_screenshot", desc="Takes screenshot of window's full client area and saves it in the root directory", hotkey="^5")
 def take_window_screenshot(ctx: ActionContext):
@@ -140,6 +142,13 @@ def take_screenshot(ctx: ActionContext):
     cv2.imwrite('screen_non_ui.png', non_ui_img)
 
 _screenshot_counter = 0
+
+_map_tiles = []
+_map_offsets = []
+_map_composite = None
+_map_prev_crop = None
+_map_cum_offset = None
+
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
 def take_center_screenshot(ctx: ActionContext):
@@ -164,6 +173,79 @@ def take_center_screenshot(ctx: ActionContext):
     _screenshot_counter += 1
     filename = f"scrn_{_screenshot_counter:04d}.png"
     cv2.imwrite(filename, crop)
+
+
+@action_decorator(name="map_capture", desc="Capture tile and blend into map composite. Arg: tile size px", hotkey="^7")
+def map_capture(ctx: ActionContext):
+    global _map_tiles, _map_offsets, _map_composite, _map_prev_crop, _map_cum_offset
+
+    img = ctx.snail.wait_next_frame()
+    r = ctx.snail.window_rect
+    w = 400
+    if len(ctx.args) > 0:
+        try:
+            w = int(ctx.args[0])
+        except Exception as e:
+            logging.info(f'invalid argument passed {e}')
+
+    dims = numpy.array([w, w])
+    cent = r.wh() // 2
+    rr = Rect.from_centdims(*cent, *dims)
+    crop = crop_image(img, rr)
+
+    if _map_prev_crop is None:
+        _map_tiles = [crop]
+        _map_offsets = [(0, 0)]
+        _map_cum_offset = numpy.array([0, 0])
+        _map_composite = crop.copy()
+    else:
+        result = deduce_frame_offset_verified(_map_prev_crop, crop)
+        int_off = numpy.round(result.offset).astype(int)
+        _map_cum_offset = _map_cum_offset + int_off
+        _map_tiles.append(crop)
+        _map_offsets.append(tuple(_map_cum_offset))
+        _map_composite = blend_translated(_map_tiles, _map_offsets)
+        logging.info(f'map_capture: pc=({result.phase_corr_offset[0]:.1f},{result.phase_corr_offset[1]:.1f})'
+                     f' sift=({result.sift_offset[0]:.1f},{result.sift_offset[1]:.1f})'
+                     f' agree={result.method_agreement_px:.1f}px conf={result.confidence:.2f}'
+                     if result.sift_offset is not None else
+                     f'map_capture: pc=({result.phase_corr_offset[0]:.1f},{result.phase_corr_offset[1]:.1f})'
+                     f' sift=None agree=inf conf={result.confidence:.2f}')
+
+    _map_prev_crop = crop
+    _draw_map_composite(ctx)
+
+
+@action_decorator(name="map_clear", desc="Clear map composite", hotkey="^!7")
+def map_clear(ctx: ActionContext):
+    global _map_tiles, _map_offsets, _map_composite, _map_prev_crop, _map_cum_offset
+    _map_tiles = []
+    _map_offsets = []
+    _map_composite = None
+    _map_prev_crop = None
+    _map_cum_offset = None
+    ctx.overlay.destroy_scene('map_composite')
+
+
+def _draw_map_composite(ctx):
+    if _map_composite is None:
+        return
+    r = Rect(0, 0, 1920, 1080 * 2) # ctx.snail.window_rect
+    wr, wh = r.w, r.h
+    cr, ch = _map_composite.shape[1], _map_composite.shape[0]
+
+    scale = min(wr / cr, wh / ch, 1.0)
+    dw = int(cr * scale)
+    dh = int(ch * scale)
+
+    dx = r.x0 + (wr - dw) // 2
+    dy = r.y0 + (wh - dh) // 2
+
+    display = cv2.resize(_map_composite, (dw, dh), interpolation=cv2.INTER_AREA)
+    _, png = cv2.imencode('.png', display)
+
+    with ctx.overlay.scene('map_composite') as s:
+        s.image(dx, dy, dw, dh, png_bytes=memoryview(png))
 
 
 def main():
