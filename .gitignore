@@ -18,3 +18,5 @@ logs/
 
 
 ./config.yaml
+entity_detector.ipynb
+*.png
