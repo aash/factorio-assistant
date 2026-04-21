@@ -1,14 +1,17 @@
 from __future__ import annotations
+from overlay import OverlayClient
+from mapar import Snail
 from dataclasses import dataclass, field
-from typing import Callable, Any
+from typing import Callable
 
 _ACTIONS: dict[str, dict] = {}
+_LAST_ARGS: dict[str, list[str]] = {}
 
 
 @dataclass
 class ActionContext:
-    snail: Any
-    overlay: Any
+    snail: Snail
+    overlay: OverlayClient
     args: list[str] = field(default_factory=list)
 
 
@@ -47,15 +50,17 @@ def register_actions(snail, ov):
         hk = info.get("hotkey")
         if hk:
             func = info["func"]
+            name = info["name"]
 
-            def make_callback(f):
+            def make_callback(f, n):
                 def callback():
-                    ctx = ActionContext(snail=snail, overlay=ov, args=[])
+                    args = _LAST_ARGS.get(n, [])
+                    ctx = ActionContext(snail=snail, overlay=ov, args=args)
                     f(ctx)
                 callback.__name__ = f.__name__
                 return callback
 
-            snail.ahk.add_hotkey(hk, make_callback(func))
+            snail.ahk.add_hotkey(hk, make_callback(func, name))
 
 
 def fuzzy_match(query: str, candidates: list[dict], limit: int = 10) -> list[dict]:
@@ -96,6 +101,8 @@ def execute_action(name: str, ctx: ActionContext):
     info = _ACTIONS.get(name)
     if info:
         ctx.args = _parse_args(name, ctx.args)
+        if ctx.args:
+            _LAST_ARGS[name] = ctx.args
         info["func"](ctx)
 
 

@@ -1,3 +1,4 @@
+import numpy
 import logging
 from assistant.actions import action_decorator
 import cv2
@@ -11,7 +12,7 @@ from assistant import input_hook
 from assistant import key_capture_window
 from assistant import fuzzy_match, execute_action, ActionContext, register_actions, get_actions
 import argparse
-from graphics import crop_image
+from graphics import crop_image, Rect
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -138,6 +139,32 @@ def take_screenshot(ctx: ActionContext):
     non_ui_img = crop_image(img, ctx.snail.non_ui_rect)
     cv2.imwrite('screen_non_ui.png', non_ui_img)
 
+_screenshot_counter = 0
+
+@action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
+def take_center_screenshot(ctx: ActionContext):
+    global _screenshot_counter
+    img = ctx.snail.wait_next_frame()
+    r = ctx.snail.window_rect
+    logging.info(f'action arguments: {ctx.args}')
+    w = 100
+    if len(ctx.args) > 0:
+        try:
+            w = int(ctx.args[0])
+        except Exception as e:
+            logging.info(f'invalid argument passed {e}')
+    dims = numpy.array([w, w])
+    cent = r.wh() // 2
+    rr = Rect.from_centdims(*cent, *dims)
+    crop = crop_image(img, rr)
+    logging.info(f'crop rect: {rr}')
+
+    logging.info(f'{r} {img.shape}')
+    logging.info(f'{crop.shape}')
+    _screenshot_counter += 1
+    filename = f"scrn_{_screenshot_counter:04d}.png"
+    cv2.imwrite(filename, crop)
+
 
 def main():
 
@@ -156,9 +183,12 @@ def main():
         register_actions(snail, ov)
 
         with ov.scene('tst') as s:
+            pass
             s.rect(*r.xywh(), pen_color=(0, 255, 0, 255), pen_width=2)
             for uir in snail.ui_brects:
-                s.rect(*uir.moved(r.x0, r.y0).xywh(), pen_color=(0, 255, 0, 255), pen_width=1)
+                logging.info(f'brect: {uir.moved(r.x0, r.y0).xywh()}')
+                uir_typefix = map(int, uir.moved(r.x0, r.y0).xywh())
+                s.rect(*uir_typefix, pen_color=(0, 255, 0, 255), pen_width=1)
 
         t0 = time.monotonic()
         tfps = collections.deque([0] * 60, maxlen=60)
@@ -225,6 +255,11 @@ def main():
                                 elif value == 'Down':
                                     if selected_idx < len(results) - 1:
                                         selected_idx += 1
+                                elif value == 'Right':
+                                    query = results[min(selected_idx_final, len(results) - 1)]['name']
+                                elif value == 'Space':
+                                    query += ' '
+
                             results = fuzzy_match(query, get_actions())
                             draw_command_palette(ov, query, results, selected_idx, r.xywh())
                         app.processEvents()
