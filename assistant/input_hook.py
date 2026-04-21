@@ -116,7 +116,7 @@ Loop {
         + r'''", "w", "UTF-8")
         Break
     }
-    Sleep(50)
+    Sleep(20)
 }
 
 ih := InputHook("V L0")
@@ -205,3 +205,4 @@ SendMsg(msg) {
         except OSError:
             pass
         kernel32.CloseHandle(pipe_handle)
+        reader_thread.join()
