@@ -76,6 +76,7 @@ class SnailWindowMode(Enum):
 class Snail:
 
     CONFIG_FILE = 'config.yaml'
+    CACHE_FILE = 'data/cache.yaml'
     FACTORIO_WINDOW_NAME = 'Factorio'
     COLOR_BLACK = (0, 0, 0)
     COLOR_GREEN = (0, 255, 0)
@@ -100,10 +101,16 @@ class Snail:
             self.window = None
             self.window_id = None
             self.window_rect = get_screen_rect()
+        self.window_rect_key = str(self.window_rect)
         cfg_file = Path(self.CONFIG_FILE)
         if not cfg_file.exists():
             cfg_file.touch()
         self.config = Box.from_yaml(filename=self.CONFIG_FILE)
+        self.cache_path = Path(self.CACHE_FILE)
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.cache_path.exists():
+            self.cache_path.write_text('{}\n', encoding='utf-8')
+        self.cache = Box.from_yaml(filename=self.CACHE_FILE) or Box()
         self._dxgi_backend = "dxcam"
         self.dxgi_fps = 120
         self.debug_ui_rect = None
@@ -118,30 +125,21 @@ class Snail:
         )
         self.dxgi_dxcam_device.start(target_fps=self.dxgi_fps)
         logging.info(f'snail started {self.window_rect}')
-        # self.ensure_next_frame()
-        
-        if True or (self.window_rect != Rect.from_str(self.config.get('prev_win_resolution')) or \
-            not hasattr(self.config, 'prev_non_ui_rect')):
-            r, _, _ = self.get_widget_brects(default_delay=0.6)
-            self.non_ui_rect = self.get_non_ui_rect(r)
+
+        cache_window_rect = self.cache.get('window_rect')
+        cache_non_ui_rect = self.cache.get('non_ui_rect')
+        cache_ui_brects = self.cache.get('ui_brects')
+
+        if cache_window_rect == self.window_rect_key and cache_non_ui_rect and cache_ui_brects:
+            self.non_ui_rect = Rect.from_str(cache_non_ui_rect)
+            self.ui_brects = [Rect.from_str(s) for s in cache_ui_brects]
+            logging.info('loaded ui layout from cache')
         else:
-            self.non_ui_rect = Rect.from_str(self.config.prev_non_ui_rect)
+            ui_brects, _, _ = self.get_widget_brects(default_delay=0.6)
+            self.non_ui_rect = self.get_non_ui_rect(ui_brects)
+            self.ui_brects = ui_brects
+            self._save_cache()
         logging.info(f'non ui rect: {self.non_ui_rect}')
-        # non_ui_img = self.wait_next_frame()
-        # ents = self.get_entity_coords(non_ui_img)
-        # logging.info(ents)
-        # if len(ents) > 0:
-        #     self.entity_positions_enabled = True
-        #     self.char_offset = self.get_char_coords(non_ui_img)
-        #     logging.info(f'character offset: {self.char_offset}')
-        # else:
-        #     self.entity_positions_enabled = False
-        #     if self.window_rect.wh() == (3840, 2160):
-        #         self.char_offset = np.array((1921, 1081))
-        #     elif self.window_rect.wh() == (1920, 1080):
-        #         self.char_offset = np.array((960, 541))
-        #     else:
-        #         self.char_offset = None
         self.ahk.start_hotkeys()
         time.sleep(0.1)
         return self
@@ -152,12 +150,7 @@ class Snail:
         time.sleep(0.1)
         logging.info('Stopping snail')
         self.dxgi_dxcam_device.stop()
-        self.config.prev_win_resolution = str(self.window_rect)
-        self.config.prev_non_ui_rect = str(self.non_ui_rect)
-        self.config.char_location = {'3840x2160': '1921,1081',
-            '1920x1080': '960,541'}
-        self.config.to_yaml(self.CONFIG_FILE)
-        logging.info('write config to disk')
+        self._save_cache()
 
     def get_diff_image(self, action, initialize = None, finalize = None, roi = None):
 
@@ -188,7 +181,13 @@ class Snail:
         im0, im1 = self.get_diff_image(action, initialize, finalize)
         self.ui_brects = get_bounding_rects(im0, im1)
         return self.ui_brects, im0, im1
-    
+
+    def _save_cache(self):
+        self.cache.window_rect = self.window_rect_key
+        self.cache.non_ui_rect = str(self.non_ui_rect)
+        self.cache.ui_brects = [str(r) for r in getattr(self, 'ui_brects', [])]
+        self.cache.to_yaml(self.CACHE_FILE)
+
     def filter_brects(self, rects: List[Rect], query: WidgetType = WidgetType.CENTRAL) -> Rect | None:
         win = Rect(0, 0, *self.window_rect.wh())
         f = filter(lambda x: query.value == label_brect(x, win), rects)

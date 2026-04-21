@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "ahk[binary]>=1.8.4",
-    "dxcam[cv2,winrt]>=0.3.0",
+    "dxcam[cv2]>=0.3.0",
     "ipython>=9.12.0",
     "msgpack>=1.1.2",
     "numpy>=2.4.4",
@@ -21,7 +21,6 @@ dependencies = [
     "pywin32>=311",
     "pyzmq>=27.1.0",
     "qasync>=0.28.0",
-    "rapidshot>=1.1.0",
     "ruff>=0.15.11",
     "scikit-image>=0.26.0",
     "ty>=0.0.29",

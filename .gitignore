@@ -21,3 +21,4 @@ logs/
 data/map_graph/
 entity_detector.ipynb
 *.png
+data/

@@ -6,6 +6,7 @@ import collections
 import time
 from queue import Empty
 from common import exit_hotkey, hotkey_handler, timeout
+from common import label_brect
 from mapar import Snail
 from overlay import overlay
 from assistant import input_hook
@@ -147,6 +148,29 @@ _map_tiles = []
 _map_offsets = []
 _map_composite = None
 _map_graph_builder = None
+_map_prev_crop = None
+_map_cum_offset = None
+_show_ui_brect_marks = False
+_history_queue = None
+_show_history_widget = False
+
+
+def _ui_brect_label(rect: Rect, window: Rect) -> str:
+    labels = label_brect(rect, window)
+    if not labels:
+        return 'ui'
+    return ','.join(sorted(str(lbl) for lbl in labels))
+
+
+def _draw_ui_brect_marks(ov, snail):
+    r = snail.window_rect
+    with ov.scene('ui_brect_marks') as s:
+        for uir in getattr(snail, 'ui_brects', []):
+            abs_rect = uir.moved(r.x0, r.y0)
+            x, y, w, h = map(int, abs_rect.xywh())
+            s.rect(x, y, w, h, pen_color=(0, 255, 0, 255), pen_width=1)
+            s.text(x + 4, y + 20, _ui_brect_label(abs_rect, r),
+                   color=(0, 255, 0, 255), font="JetBrainsMono NFM", size=10)
 
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
@@ -236,6 +260,34 @@ def drop_map_graph_action(ctx: ActionContext):
     logging.info('map graph dropped')
 
 
+@action_decorator(name="toggle_ui_brect_marks", desc="Toggle UI bounding box labels")
+def toggle_ui_brect_marks(ctx: ActionContext):
+    global _show_ui_brect_marks
+    _show_ui_brect_marks = not _show_ui_brect_marks
+    if _show_ui_brect_marks:
+        _draw_ui_brect_marks(ctx.overlay, ctx.snail)
+    else:
+        ctx.overlay.destroy_scene('ui_brect_marks')
+    logging.info('ui brect marks %s', 'enabled' if _show_ui_brect_marks else 'disabled')
+
+
+def _refresh_history_widget(ov, input_queue, screen_rect):
+    if _show_history_widget:
+        draw_history(ov, input_queue, screen_rect)
+    else:
+        ov.destroy_scene('history')
+
+
+@action_decorator(name="toggle_history", desc="Toggle command history widget", hotkey="^!h")
+def toggle_history(ctx: ActionContext):
+    global _show_history_widget
+    if _history_queue is None:
+        return
+    _show_history_widget = not _show_history_widget
+    _refresh_history_widget(ctx.overlay, _history_queue, ctx.snail.window_rect.xywh())
+    logging.info('history widget %s', 'enabled' if _show_history_widget else 'disabled')
+
+
 def _draw_map_composite(ctx):
     if _map_composite is None:
         return
@@ -270,16 +322,11 @@ def main():
             timeout(1000) as is_not_timeout:
 
         input_queue = collections.deque(maxlen=HISTORY_MAX)
+        global _history_queue
+        _history_queue = input_queue
         r = snail.window_rect
         register_actions(snail, ov)
 
-        with ov.scene('tst') as s:
-            pass
-            s.rect(*r.xywh(), pen_color=(0, 255, 0, 255), pen_width=2)
-            for uir in snail.ui_brects:
-                logging.info(f'brect: {uir.moved(r.x0, r.y0).xywh()}')
-                uir_typefix = map(int, uir.moved(r.x0, r.y0).xywh())
-                s.rect(*uir_typefix, pen_color=(0, 255, 0, 255), pen_width=1)
 
         t0 = time.monotonic()
         tfps = collections.deque([0] * 60, maxlen=60)
@@ -295,7 +342,7 @@ def main():
 
             with ov.scene('frame') as ss:
 
-                ss.image(r.x0, r.y0, w, h, png_bytes=memoryview(b))  # ty:ignore[invalid-argument-type]
+                ss.image(5, 40, w, h, png_bytes=memoryview(b))  # ty:ignore[invalid-argument-type]
             dtfps = int((time.perf_counter() - t0fps) * UNITS_PER_SECOND)
             tfps.appendleft(dtfps)
             with ov.scene('hud') as hud:
@@ -354,7 +401,7 @@ def main():
                             results = fuzzy_match(query, get_actions())
                             draw_command_palette(ov, query, results, selected_idx, r.xywh())
                         app.processEvents()
-                        time.sleep(0.016)
+                        time.sleep(0.010)
                 ov.destroy_scene('input')
                 if submitted and results:
                     action = results[min(selected_idx_final, len(results) - 1)]
@@ -363,4 +410,4 @@ def main():
                     args = [query_arg] if query_arg else []
                     ctx = ActionContext(snail=snail, overlay=ov, args=args)
                     execute_action(action["name"], ctx)
-                    draw_history(ov, input_queue, r.xywh())
+                    _refresh_history_widget(ov, input_queue, r.xywh())
