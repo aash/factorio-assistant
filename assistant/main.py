@@ -13,7 +13,7 @@ from assistant import key_capture_window
 from assistant import fuzzy_match, execute_action, ActionContext, register_actions, get_actions
 import argparse
 from graphics import crop_image, Rect, blend_translated
-from entity_detector import deduce_frame_offset_verified
+from map_graph import MapGraphBuilder, drop_map_graph
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -146,8 +146,7 @@ _screenshot_counter = 0
 _map_tiles = []
 _map_offsets = []
 _map_composite = None
-_map_prev_crop = None
-_map_cum_offset = None
+_map_graph_builder = None
 
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
@@ -177,7 +176,7 @@ def take_center_screenshot(ctx: ActionContext):
 
 @action_decorator(name="map_capture", desc="Capture tile and blend into map composite. Arg: tile size px", hotkey="^7")
 def map_capture(ctx: ActionContext):
-    global _map_tiles, _map_offsets, _map_composite, _map_prev_crop, _map_cum_offset
+    global _map_tiles, _map_offsets, _map_composite, _map_graph_builder
 
     img = ctx.snail.wait_next_frame()
     r = ctx.snail.window_rect
@@ -193,38 +192,48 @@ def map_capture(ctx: ActionContext):
     rr = Rect.from_centdims(*cent, *dims)
     crop = crop_image(img, rr)
 
-    if _map_prev_crop is None:
-        _map_tiles = [crop]
-        _map_offsets = [(0, 0)]
-        _map_cum_offset = numpy.array([0, 0])
-        _map_composite = crop.copy()
-    else:
-        result = deduce_frame_offset_verified(_map_prev_crop, crop)
-        int_off = numpy.round(result.offset).astype(int)
-        _map_cum_offset = _map_cum_offset + int_off
-        _map_tiles.append(crop)
-        _map_offsets.append(tuple(_map_cum_offset))
-        _map_composite = blend_translated(_map_tiles, _map_offsets)
-        logging.info(f'map_capture: pc=({result.phase_corr_offset[0]:.1f},{result.phase_corr_offset[1]:.1f})'
-                     f' sift=({result.sift_offset[0]:.1f},{result.sift_offset[1]:.1f})'
-                     f' agree={result.method_agreement_px:.1f}px conf={result.confidence:.2f}'
-                     if result.sift_offset is not None else
-                     f'map_capture: pc=({result.phase_corr_offset[0]:.1f},{result.phase_corr_offset[1]:.1f})'
-                     f' sift=None agree=inf conf={result.confidence:.2f}')
+    if _map_graph_builder is None:
+        _map_graph_builder = MapGraphBuilder()
 
-    _map_prev_crop = crop
+    capture = _map_graph_builder.add_capture(crop)
+
+    if capture.node.coord is not None:
+        _map_tiles.append(crop)
+        _map_offsets.append((int(round(capture.node.coord[0])), int(round(capture.node.coord[1]))))
+        _map_composite = blend_translated(_map_tiles, _map_offsets)
+
+    logging.info(
+        'map_capture: uid=%s coord=%s time_of_day=%.3f status=%s edges=%d bad=%s',
+        capture.node.uid,
+        capture.node.coord,
+        capture.node.time_of_day,
+        capture.node.status,
+        len(capture.edges),
+        capture.bad,
+    )
+
     _draw_map_composite(ctx)
 
 
 @action_decorator(name="map_clear", desc="Clear map composite", hotkey="^!7")
 def map_clear(ctx: ActionContext):
-    global _map_tiles, _map_offsets, _map_composite, _map_prev_crop, _map_cum_offset
+    global _map_tiles, _map_offsets, _map_composite
     _map_tiles = []
     _map_offsets = []
     _map_composite = None
-    _map_prev_crop = None
-    _map_cum_offset = None
     ctx.overlay.destroy_scene('map_composite')
+
+
+@action_decorator(name="drop_map_graph", desc="Delete persisted map graph and node images")
+def drop_map_graph_action(ctx: ActionContext):
+    global _map_tiles, _map_offsets, _map_composite, _map_graph_builder
+    drop_map_graph()
+    _map_tiles = []
+    _map_offsets = []
+    _map_composite = None
+    _map_graph_builder = None
+    ctx.overlay.destroy_scene('map_composite')
+    logging.info('map graph dropped')
 
 
 def _draw_map_composite(ctx):
