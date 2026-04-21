@@ -6,6 +6,7 @@ import collections
 import time
 from queue import Empty
 from common import exit_hotkey, hotkey_handler, timeout
+from common import label_brect
 from mapar import Snail
 from overlay import overlay
 from assistant import input_hook
@@ -148,6 +149,25 @@ _map_offsets = []
 _map_composite = None
 _map_prev_crop = None
 _map_cum_offset = None
+_show_ui_brect_marks = False
+
+
+def _ui_brect_label(rect: Rect, window: Rect) -> str:
+    labels = label_brect(rect, window)
+    if not labels:
+        return 'ui'
+    return ','.join(sorted(str(lbl) for lbl in labels))
+
+
+def _draw_ui_brect_marks(ov, snail):
+    r = snail.window_rect
+    with ov.scene('ui_brect_marks') as s:
+        for uir in getattr(snail, 'ui_brects', []):
+            abs_rect = uir.moved(r.x0, r.y0)
+            x, y, w, h = map(int, abs_rect.xywh())
+            s.rect(x, y, w, h, pen_color=(0, 255, 0, 255), pen_width=1)
+            s.text(x + 4, y + 20, _ui_brect_label(abs_rect, r),
+                   color=(0, 255, 0, 255), font="JetBrainsMono NFM", size=10)
 
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
@@ -227,6 +247,17 @@ def map_clear(ctx: ActionContext):
     ctx.overlay.destroy_scene('map_composite')
 
 
+@action_decorator(name="toggle_ui_brect_marks", desc="Toggle UI bounding box labels")
+def toggle_ui_brect_marks(ctx: ActionContext):
+    global _show_ui_brect_marks
+    _show_ui_brect_marks = not _show_ui_brect_marks
+    if _show_ui_brect_marks:
+        _draw_ui_brect_marks(ctx.overlay, ctx.snail)
+    else:
+        ctx.overlay.destroy_scene('ui_brect_marks')
+    logging.info('ui brect marks %s', 'enabled' if _show_ui_brect_marks else 'disabled')
+
+
 def _draw_map_composite(ctx):
     if _map_composite is None:
         return
@@ -264,13 +295,6 @@ def main():
         r = snail.window_rect
         register_actions(snail, ov)
 
-        with ov.scene('tst') as s:
-            pass
-            s.rect(*r.xywh(), pen_color=(0, 255, 0, 255), pen_width=2)
-            for uir in snail.ui_brects:
-                logging.info(f'brect: {uir.moved(r.x0, r.y0).xywh()}')
-                uir_typefix = map(int, uir.moved(r.x0, r.y0).xywh())
-                s.rect(*uir_typefix, pen_color=(0, 255, 0, 255), pen_width=1)
 
         t0 = time.monotonic()
         tfps = collections.deque([0] * 60, maxlen=60)
