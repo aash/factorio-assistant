@@ -33,7 +33,7 @@ def action_decorator(
 
 def get_actions() -> list[dict]:
     return [
-        {"name": info["name"], "desc": info["desc"]}
+        {"name": info["name"], "desc": info["desc"], "hotkey": info.get("hotkey")}
         for info in _ACTIONS.values()
     ]
 
@@ -58,9 +58,7 @@ def register_actions(snail, ov):
             snail.ahk.add_hotkey(hk, make_callback(func))
 
 
-def fuzzy_match(query: str, candidates: list[dict] | None = None, limit: int = 10) -> list[dict]:
-    if candidates is None:
-        candidates = get_actions()
+def fuzzy_match(query: str, candidates: list[dict], limit: int = 10) -> list[dict]:
     if not query:
         return candidates[:limit]
     q = query.lower()
@@ -112,49 +110,4 @@ def _parse_args(name: str, args: list[str]) -> list[str]:
             parsed.append(arg)
     return parsed
 
-
-@action_decorator(name="draw_large_text", desc="Draw large text on overlay")
-def draw_large_text(ctx: ActionContext):
-    ov = ctx.overlay
-    r = ctx.snail.window_rect
-    x0, y0, w, h = r.xywh()
-    cx = x0 + w // 2
-    cy = y0 + h // 2
-    with ov.scene("action_text") as s:
-        s.text(cx - 200, cy, "LARGE TEXT",
-               color=(255, 200, 50, 255), font="JetBrainsMono NFM", size=36, bold=True)
-
-
-@action_decorator(name="draw_ellipse", desc="Draw an ellipse shape")
-def draw_ellipse(ctx: ActionContext):
-    ov = ctx.overlay
-    r = ctx.snail.window_rect
-    x0, y0, w, h = r.xywh()
-    cx = x0 + w // 2
-    cy = y0 + h // 2
-    with ov.scene("action_ellipse") as s:
-        s.ellipse(cx - 120, cy - 80, 240, 160,
-                 pen_color=(0, 200, 255, 220), pen_width=2,
-                 brush_color=(0, 100, 200, 60))
-
-
-@action_decorator(name="draw_rectangle", desc="Draw a rectangle shape")
-def draw_rectangle(ctx: ActionContext):
-    ov = ctx.overlay
-    r = ctx.snail.window_rect
-    x0, y0, w, h = r.xywh()
-    cx = x0 + w // 2
-    cy = y0 + h // 2
-    with ov.scene("action_rect") as s:
-        s.rect(cx - 120, cy - 80, 240, 160,
-              pen_color=(255, 100, 50, 220), pen_width=2,
-              brush_color=(200, 50, 20, 60))
-
-
-@action_decorator(name="clear", desc="Clears overlay")
-def clear(ctx: ActionContext):
-    ov = ctx.overlay
-    ov.destroy_scene('action_rect')
-    ov.destroy_scene('action_ellipse')
-    ov.destroy_scene('action_text')
             
