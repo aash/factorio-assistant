@@ -16,7 +16,7 @@ import argparse
 from graphics import crop_image, Rect, blend_translated
 from entity_detector import deduce_frame_offset_verified
 from map_graph import MapGraphBuilder, drop_map_graph
-from map_graph.store import save_composite_image
+from map_graph.store import save_composite_image, save_graph, delete_node_image
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -114,6 +114,7 @@ _map_composite = None
 _map_graph_builder = None
 _map_prev_crop = None
 _map_cum_offset = None
+_show_map_node_hover = False
 _show_ui_brect_marks = False
 _history_queue = None
 _show_history_widget = False
@@ -135,6 +136,47 @@ def _draw_ui_brect_marks(ov, snail):
             s.rect(x, y, w, h, pen_color=(0, 255, 0, 255), pen_width=1)
             s.text(x + 4, y + 20, _ui_brect_label(abs_rect, r),
                    color=(0, 255, 0, 255), font="JetBrainsMono NFM", size=10)
+
+
+def _map_coord_to_screen(coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h):
+    dx, dy = coord
+    return origin_x + (dx - min_x) + tile_w // 2, origin_y + (dy - min_y) + tile_h // 2
+
+
+def _get_hovered_map_node(ctx):
+    builder = _map_graph_builder
+    if builder is None:
+        return None
+    graph = builder.graph
+    if graph is None:
+        return None
+    try:
+        mouse_pos = ctx.snail.ahk.get_mouse_position(coord_mode='Screen')
+    except Exception:
+        return None
+    if mouse_pos is None:
+        return None
+
+    r = Rect(0, 0, 1920, 1080 * 2)  # ctx.snail.window_rect
+    min_x = min(dx for dx, _ in _map_offsets) if _map_offsets else 0
+    min_y = min(dy for _, dy in _map_offsets) if _map_offsets else 0
+    origin_x = r.x0 + r.w // 2 + MAP_ANCHOR_X + min_x
+    origin_y = r.y0 + r.h // 2 + MAP_ANCHOR_Y + min_y
+    tile_w = _map_tiles[0].shape[1] if _map_tiles else 0
+    tile_h = _map_tiles[0].shape[0] if _map_tiles else 0
+
+    mouse_x, mouse_y = int(mouse_pos.x), int(mouse_pos.y)
+    hovered_node = None
+    hovered_dist = 18.0
+    for node in graph.nodes.values():
+        if node.coord is None:
+            continue
+        node_x, node_y = _map_coord_to_screen(node.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
+        dist = ((mouse_x - node_x) ** 2 + (mouse_y - node_y) ** 2) ** 0.5
+        if dist <= hovered_dist:
+            hovered_dist = dist
+            hovered_node = node
+    return hovered_node
 
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
@@ -226,6 +268,37 @@ def drop_map_graph_action(ctx: ActionContext):
     logging.info('map graph dropped')
 
 
+@action_decorator(name="delete_hovered_map_node", desc="Delete the hovered map graph node", hotkey="^!d")
+def delete_hovered_map_node(ctx: ActionContext):
+    global _map_graph_builder, _map_tiles, _map_offsets, _map_composite
+    hovered_node = _get_hovered_map_node(ctx)
+    if hovered_node is None:
+        logging.info('no hovered map node to delete')
+        return
+
+    uid = hovered_node.uid
+    builder = _map_graph_builder
+    if builder is None:
+        return
+    graph = builder.graph
+    graph.nodes.pop(uid, None)
+    graph.edges = [edge for edge in graph.edges if edge.from_uid != uid and edge.to_uid != uid]
+    if graph.last_uid == uid:
+        graph.last_uid = next(iter(graph.nodes), None)
+    save_graph(graph)
+    delete_node_image(uid)
+    _reload_map_from_storage(ctx.snail, ctx.overlay)
+    logging.info('deleted hovered map node %s', uid)
+
+
+@action_decorator(name="toggle_map_node_hover", desc="Toggle map node hover highlight")
+def toggle_map_node_hover(ctx: ActionContext):
+    global _show_map_node_hover
+    _show_map_node_hover = not _show_map_node_hover
+    _draw_map_composite(ctx)
+    logging.info('map node hover %s', 'enabled' if _show_map_node_hover else 'disabled')
+
+
 @action_decorator(name="toggle_ui_brect_marks", desc="Toggle UI bounding box labels")
 def toggle_ui_brect_marks(ctx: ActionContext):
     global _show_ui_brect_marks
@@ -270,9 +343,11 @@ def _draw_map_composite(ctx):
     tile_h = _map_tiles[0].shape[0] if _map_tiles else 0
     edge_color = (0, 255, 0, 120)
 
-    def to_screen(coord):
-        dx, dy = coord
-        return origin_x + (dx - min_x) + tile_w // 2, origin_y + (dy - min_y) + tile_h // 2
+    hovered_node = None
+    if _show_map_node_hover and _map_graph_builder is not None:
+        hovered = _get_hovered_map_node(ctx)
+        if hovered is not None:
+            hovered_node = _map_coord_to_screen(hovered.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
 
     with ctx.overlay.scene('map_composite') as s:
         s.image(origin_x, origin_y, display.shape[1], display.shape[0], png_bytes=memoryview(png))
@@ -291,16 +366,20 @@ def _draw_map_composite(ctx):
                     continue
                 if from_node.coord is None or to_node.coord is None:
                     continue
-                x1, y1 = to_screen(from_node.coord)
-                x2, y2 = to_screen(to_node.coord)
+                x1, y1 = _map_coord_to_screen(from_node.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
+                x2, y2 = _map_coord_to_screen(to_node.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
                 s.line(x1, y1, x2, y2, color=edge_color, width=1)
         for dx, dy in _map_offsets:
-            cx = origin_x + (dx - min_x) + tile_w // 2
-            cy = origin_y + (dy - min_y) + tile_h // 2
+            cx, cy = _map_coord_to_screen((dx, dy), origin_x, origin_y, min_x, min_y, tile_w, tile_h)
             s.line(cx - 7, cy, cx + 7, cy, color=(255, 0, 0, 180), width=3)
             s.line(cx, cy - 7, cx, cy + 7, color=(255, 0, 0, 180), width=3)
             s.text(cx - 12+10, cy + 4-10, f'{dx},{dy}',
                    color=(255, 230, 120, 128), font='JetBrainsMono NFM', size=7)
+        if hovered_node is not None:
+            cx, cy = hovered_node
+            s.ellipse(cx - 14, cy - 14, 28, 28,
+                      pen_color=(0, 255, 0, 255), pen_width=2,
+                      brush_color=(0, 60, 0, 96))
 
 
 def _reload_map_from_storage(snail, ov):
@@ -352,6 +431,9 @@ def main():
                 fps = len(tfps) * UNITS_PER_SECOND / sum(tfps)
                 ft = f'{t:6.3f}, FPS = {fps:06.1f}'
                 hud.text(40, 80, ft, (0, 255, 0, 255), "JetBrainsMono NFM", 10)
+
+            if _show_map_node_hover:
+                _draw_map_composite(ActionContext(snail=snail, overlay=ov, args=[]))
 
             cmd = cmd_get()
             if cmd == 'exit':
