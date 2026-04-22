@@ -29,10 +29,81 @@ MAX_VISIBLE_RESULTS = 6
 MOTION_DEMO_SIZE = 400
 MOTION_DEMO_X = 40
 MOTION_DEMO_Y = 420
+MOTION_DEMO_FPS = 30
+MOTION_DEMO_FRAME_SEC = 1.0 / MOTION_DEMO_FPS
+MOTION_DEMO_STOP_SPEED = 5.0
+MOTION_DEMO_DIRECTION_UPDATE_SPEED = 12.0
+MOTION_DEMO_DIRECTION_ALPHA = 0.85
 MOTION_ARROW_SCALE = 0.08
 MOTION_ARROW_MAX_LEN = 180
 MAP_ANCHOR_X = 40
 MAP_ANCHOR_Y = 140
+
+
+class VelocityKalmanFilter:
+    def __init__(self, process_var=1200.0, measurement_var=120.0, initial_covariance=2500.0):
+        self.process_var = float(process_var)
+        self.measurement_var = float(measurement_var)
+        self.initial_covariance = float(initial_covariance)
+        self.state = numpy.zeros(2, dtype=numpy.float32)
+        self.cov = numpy.eye(2, dtype=numpy.float32) * self.initial_covariance
+        self.direction = None
+
+    def reset(self):
+        self.state.fill(0.0)
+        self.cov[:] = numpy.eye(2, dtype=self.cov.dtype) * self.initial_covariance
+        self.direction = None
+
+    def _update_direction(self, velocity: numpy.ndarray) -> numpy.ndarray | None:
+        speed = float(numpy.linalg.norm(velocity))
+        if speed <= 1e-6:
+            return self.direction
+
+        direction = velocity / speed
+        if self.direction is None:
+            self.direction = direction
+            return self.direction
+
+        blended = self.direction * MOTION_DEMO_DIRECTION_ALPHA + direction * (1.0 - MOTION_DEMO_DIRECTION_ALPHA)
+        blended_norm = float(numpy.linalg.norm(blended))
+        if blended_norm > 1e-6:
+            self.direction = blended / blended_norm
+        return self.direction
+
+    def update(self, measurement, dt: float, confidence: float = 1.0):
+        measurement = numpy.asarray(measurement, dtype=numpy.float32)
+        dt = max(float(dt), MOTION_DEMO_FRAME_SEC)
+        confidence = max(float(confidence), 0.05)
+
+        q = self.process_var * dt
+        r = self.measurement_var / confidence
+        eye = numpy.eye(2, dtype=self.cov.dtype)
+
+        self.cov = self.cov + eye * q
+        innovation = measurement - self.state
+        s = self.cov + eye * r
+        k = numpy.linalg.solve(s.T, self.cov.T).T
+        self.state = self.state + k @ innovation
+        self.cov = (eye - k) @ self.cov
+        self.cov = 0.5 * (self.cov + self.cov.T)
+
+        speed = float(numpy.linalg.norm(self.state))
+        if speed <= MOTION_DEMO_STOP_SPEED:
+            if self.direction is None and speed > 1e-6:
+                self.direction = self.state / speed
+            return numpy.array([0.0, 0.0], dtype=numpy.float32)
+
+        if speed < MOTION_DEMO_DIRECTION_UPDATE_SPEED:
+            if self.direction is None:
+                self._update_direction(self.state)
+            if self.direction is None:
+                return self.state.copy()
+            return self.direction * speed
+
+        direction = self._update_direction(self.state)
+        if direction is None:
+            return self.state.copy()
+        return direction * speed
 
 
 def draw_history(ov, input_queue, screen_rect):
@@ -126,6 +197,8 @@ _show_history_widget = False
 _motion_demo_enabled = False
 _motion_demo_prev_crop = None
 _motion_demo_prev_ts = None
+_motion_demo_next_update_ts = None
+_motion_demo_velocity_filter = None
 
 
 def _ui_brect_label(rect: Rect, window: Rect) -> str:
@@ -304,9 +377,12 @@ def toggle_history(ctx: ActionContext):
 @action_decorator(name="toggle_motion_demo", desc="Toggle motion arrow demo", hotkey="^!v")
 def toggle_motion_demo(ctx: ActionContext):
     global _motion_demo_enabled, _motion_demo_prev_crop, _motion_demo_prev_ts
+    global _motion_demo_next_update_ts, _motion_demo_velocity_filter
     _motion_demo_enabled = not _motion_demo_enabled
     _motion_demo_prev_crop = None
     _motion_demo_prev_ts = None
+    _motion_demo_next_update_ts = None
+    _motion_demo_velocity_filter = VelocityKalmanFilter()
     if not _motion_demo_enabled:
         ctx.overlay.destroy_scene('motion_demo')
     logging.info('motion demo %s', 'enabled' if _motion_demo_enabled else 'disabled')
@@ -370,6 +446,7 @@ def _reload_map_from_storage(snail, ov):
 
 def main():
     global _motion_demo_prev_crop, _motion_demo_prev_ts
+    global _motion_demo_next_update_ts, _motion_demo_velocity_filter
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-v,--version', help='show version')
@@ -413,21 +490,24 @@ def main():
                 hud.text(40, 80, ft, (0, 255, 0, 255), "JetBrainsMono NFM", 10)
 
             if _motion_demo_enabled:
-                demo_dims = numpy.array([MOTION_DEMO_SIZE, MOTION_DEMO_SIZE])
-                demo_cent = r.wh() // 2
-                demo_rr = Rect.from_centdims(*demo_cent, *demo_dims)
-                demo_crop = crop_image(img, demo_rr)
                 now = time.perf_counter()
-                if _motion_demo_prev_crop is not None and _motion_demo_prev_ts is not None:
-                    offset, _ = deduce_frame_offset(_motion_demo_prev_crop, demo_crop)
-                    dt = max(now - _motion_demo_prev_ts, 1e-6)
-                    velocity = offset / dt
-                else:
-                    velocity = numpy.array([0.0, 0.0])
-                speed = float(numpy.linalg.norm(velocity))
-                _draw_motion_demo(ov, demo_crop, velocity, speed)
-                _motion_demo_prev_crop = demo_crop
-                _motion_demo_prev_ts = now
+                if _motion_demo_next_update_ts is None or now >= _motion_demo_next_update_ts:
+                    demo_dims = numpy.array([MOTION_DEMO_SIZE, MOTION_DEMO_SIZE])
+                    demo_cent = r.wh() // 2
+                    demo_rr = Rect.from_centdims(*demo_cent, *demo_dims)
+                    demo_crop = crop_image(img, demo_rr)
+                    if _motion_demo_prev_crop is not None and _motion_demo_prev_ts is not None:
+                        offset, confidence = deduce_frame_offset(_motion_demo_prev_crop, demo_crop)
+                        dt = max(now - _motion_demo_prev_ts, MOTION_DEMO_FRAME_SEC)
+                        raw_velocity = offset / dt
+                        velocity = _motion_demo_velocity_filter.update(raw_velocity, dt, confidence)
+                    else:
+                        velocity = _motion_demo_velocity_filter.update(numpy.array([0.0, 0.0]), MOTION_DEMO_FRAME_SEC)
+                    speed = float(numpy.linalg.norm(velocity))
+                    _draw_motion_demo(ov, demo_crop, velocity, speed)
+                    _motion_demo_prev_crop = demo_crop
+                    _motion_demo_prev_ts = now
+                    _motion_demo_next_update_ts = now + MOTION_DEMO_FRAME_SEC
             else:
                 ov.destroy_scene('motion_demo')
 
