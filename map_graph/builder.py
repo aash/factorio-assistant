@@ -10,9 +10,9 @@ import numpy as np
 
 from graphics import blend_translated
 
-from entity_detector import deduce_frame_offset_verified
+from entity_detector import deduce_frame_offset, deduce_frame_offset_verified
 
-from .constants import OVERLAP_RATIO_THRESHOLD, OFFSET_CONFIDENCE_THRESHOLD, MAX_NODE_COORD_DISPARITY_PX, NODE_UID_LENGTH
+from .constants import OVERLAP_RATIO_THRESHOLD, OFFSET_CONFIDENCE_THRESHOLD, MAX_NODE_COORD_DISPARITY_PX, NODE_UID_LENGTH, NEARBY_NODE_DISTANCE_RATIO
 from .metrics import time_of_day_from_image, overlap_ratio_from_offset, coord_distance
 from .models import MapGraph, MapNode, MapEdge
 from .store import load_graph, save_graph, save_node_image, load_composite_image, save_composite_image, delete_node_image
@@ -64,6 +64,7 @@ class MapGraphBuilder:
         composite = load_composite_image()
         if composite is None and tiles:
             composite = blend_translated(tiles, offsets)
+            logging.info('blended image')
             save_composite_image(composite)
         return tiles, offsets, composite
 
@@ -88,7 +89,7 @@ class MapGraphBuilder:
         if self.graph.tile_size is None:
             return []
         w = int(self.graph.tile_size[0])
-        max_dist = 0.3 * w
+        max_dist = NEARBY_NODE_DISTANCE_RATIO * w
         nearby = []
         for node in self.graph.nodes.values():
             if node.coord is None:
@@ -115,11 +116,32 @@ class MapGraphBuilder:
             return None
         assert tile_size is not None
 
-        result = deduce_frame_offset_verified(other_img, img)
-        raw_offset = np.asarray(result.offset, dtype=float)
-        if not np.isfinite(raw_offset[0]) or not np.isfinite(raw_offset[1]):
-            return None
-        offset = self._round_offset(raw_offset)
+        simple_offset, simple_confidence = deduce_frame_offset(other_img, img)
+        if simple_confidence < OFFSET_CONFIDENCE_THRESHOLD:
+            result = deduce_frame_offset_verified(other_img, img)
+            raw_offset = np.asarray(result.offset, dtype=float)
+            if not np.isfinite(raw_offset[0]) or not np.isfinite(raw_offset[1]):
+                return None
+            offset = self._round_offset(raw_offset)
+            confidence = float(result.confidence)
+            method_agree = float(result.method_agreement_px)
+            phase_corr_response = float(result.phase_corr_response)
+            logging.info(
+                "capture check node=%s simple_conf=%.3f verified_conf=%.3f",
+                other.uid,
+                simple_confidence,
+                confidence,
+            )
+        else:
+            offset = self._round_offset(np.asarray(simple_offset, dtype=float))
+            confidence = float(simple_confidence)
+            method_agree = 0.0
+            phase_corr_response = 0.0
+            logging.info(
+                "capture check node=%s simple_conf=%.3f accepted",
+                other.uid,
+                simple_confidence,
+            )
 
         overlap_ratio = overlap_ratio_from_offset(offset, tile_size)
         if require_overlap and overlap_ratio < OVERLAP_RATIO_THRESHOLD:
@@ -130,15 +152,121 @@ class MapGraphBuilder:
             from_uid=other.uid,
             to_uid="",
             offset=offset,
-            confidence=float(result.confidence),
-            method_agree=float(result.method_agreement_px),
+            confidence=confidence,
+            method_agree=method_agree,
             overlap_ratio=overlap_ratio,
-            phase_corr_response=float(result.phase_corr_response),
+            phase_corr_response=phase_corr_response,
             accepted=True,
         )
         return edge, implied_coord
 
-    def add_capture(self, img: np.ndarray, timestamp: Optional[float] = None) -> MapCaptureResult:
+    def _candidate_from_image(
+        self,
+        other: MapNode,
+        img: np.ndarray,
+        confidence_threshold: float,
+    ) -> Optional[tuple[list[int], float]]:
+        if other.coord is None:
+            return None
+        other_img = self._load_image(other.image_path)
+        if other_img is None:
+            return None
+
+        simple_offset, simple_confidence = deduce_frame_offset(other_img, img)
+        if simple_confidence < confidence_threshold:
+            result = deduce_frame_offset_verified(other_img, img)
+            offset = result.offset
+            confidence = float(result.confidence)
+            logging.info(
+                "seed check node=%s simple_conf=%.3f verified_conf=%.3f",
+                other.uid,
+                simple_confidence,
+                confidence,
+            )
+        else:
+            offset = simple_offset
+            confidence = float(simple_confidence)
+            logging.info(
+                "seed check node=%s simple_conf=%.3f accepted",
+                other.uid,
+                simple_confidence,
+            )
+
+        if confidence < confidence_threshold:
+            return None
+
+        implied_coord = [
+            int(other.coord[0] + float(offset[0])),
+            int(other.coord[1] + float(offset[1])),
+        ]
+        logging.info(
+            "seed candidate node=%s coord=%s confidence=%.3f",
+            other.uid,
+            implied_coord,
+            confidence,
+        )
+        return implied_coord, confidence
+
+    def _nearest_nodes(self, coord: list[int], limit: int) -> list[MapNode]:
+        nodes = [node for node in self.graph.nodes.values() if node.coord is not None]
+        nodes.sort(key=lambda node: coord_distance(node.coord, coord))
+        return nodes[:limit]
+
+    def find_best_coord_from_image(
+        self,
+        img: np.ndarray,
+        confidence_threshold: float,
+        anchor_coord: Optional[list[int]] = None,
+        nearby_limit: int = 3,
+    ) -> Optional[list[int]]:
+        def search(nodes: list[MapNode], label: str) -> Optional[list[int]]:
+            best_coord: Optional[list[int]] = None
+            best_confidence = float("-inf")
+            for other in nodes:
+                candidate = self._candidate_from_image(other, img, confidence_threshold)
+                if candidate is None:
+                    continue
+                implied_coord, confidence = candidate
+                logging.info(
+                    "seed %s result node=%s coord=%s confidence=%.3f",
+                    label,
+                    other.uid,
+                    implied_coord,
+                    confidence,
+                )
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_coord = implied_coord
+            return best_coord
+
+        if anchor_coord is not None:
+            nearest_nodes = self._nearest_nodes(anchor_coord, nearby_limit)
+            logging.info(
+                "seed validation: anchor=%s nearest=%s",
+                anchor_coord,
+                [n.uid for n in nearest_nodes],
+            )
+            best = search(nearest_nodes, "nearby")
+            if best is not None:
+                logging.info("seed validation succeeded with nearby nodes: %s", best)
+                return best
+            logging.info("seed validation failed, falling back to full graph search")
+
+        all_nodes = [node for node in self.graph.nodes.values() if node.coord is not None]
+        logging.info("seed full graph search: nodes=%d", len(all_nodes))
+        best = search(all_nodes, "full")
+        if best is not None:
+            logging.info("seed full graph search succeeded: %s", best)
+        else:
+            logging.info("seed full graph search failed")
+        return best
+
+    def add_capture(
+        self,
+        img: np.ndarray,
+        timestamp: Optional[float] = None,
+        anchor_coord: Optional[list[int]] = None,
+    ) -> MapCaptureResult:
         start = time.perf_counter()
         if timestamp is None:
             timestamp = time.time()
@@ -166,28 +294,75 @@ class MapGraphBuilder:
         edges: list[MapEdge] = []
         primary_edge: Optional[MapEdge] = None
         primary_coord: Optional[list[int]] = None
+        reference_node: Optional[MapNode] = None
+        bad = False
 
         if not self.graph.nodes:
             node.coord = [0, 0]
         else:
-            previous = self.graph.nodes.get(self.graph.last_uid) if self.graph.last_uid else None
-            if previous is not None and previous.coord is not None:
-                candidate = self._candidate_from(previous, img, require_overlap=False)
-                if candidate is not None:
-                    primary_edge, primary_coord = candidate
+            candidate_nodes: list[MapNode] = []
+            if anchor_coord is not None:
+                candidate_nodes = self._nearby_nodes(anchor_coord)[:2]
+                logging.info(
+                    "capture anchor search anchor=%s candidates=%d tile_size=%s",
+                    anchor_coord,
+                    len(candidate_nodes),
+                    self.graph.tile_size,
+                )
+
+            if not candidate_nodes and anchor_coord is None and self.graph.last_uid:
+                previous = self.graph.nodes.get(self.graph.last_uid)
+                if previous is not None and previous.coord is not None:
+                    candidate_nodes = [previous]
+
+            if not candidate_nodes:
+                bad = True
+                logging.error(
+                    "map node %s rejected: no connected candidate nodes anchor=%s graph_nodes=%d",
+                    uid,
+                    anchor_coord,
+                    len(self.graph.nodes),
+                )
+
+            if not bad:
+                best_score = None
+                anchor_top_left = None
+                if anchor_coord is not None and self.graph.tile_size is not None:
+                    anchor_top_left = [
+                        int(anchor_coord[0] - self.graph.tile_size[0] // 2),
+                        int(anchor_coord[1] - self.graph.tile_size[1] // 2),
+                    ]
+                for other in candidate_nodes:
+                    candidate = self._candidate_from(other, img, require_overlap=False)
+                    if candidate is None:
+                        continue
+
+                    edge, implied_coord = candidate
+                    score = float(edge.confidence)
+                    if anchor_top_left is not None and self.graph.tile_size is not None:
+                        score -= coord_distance(implied_coord, anchor_top_left) / float(self.graph.tile_size[0])
+
+                    if best_score is None or score > best_score:
+                        best_score = score
+                        reference_node = other
+                        primary_edge = edge
+                        primary_coord = implied_coord
+
+                if primary_edge is not None and reference_node is not None and primary_coord is not None:
+                    reference_coord = reference_node.coord
+                    assert reference_coord is not None
                     primary_edge.to_uid = uid
                     node.coord = [
-                        int(previous.coord[0] + primary_edge.offset[0]),
-                        int(previous.coord[1] + primary_edge.offset[1]),
+                        int(reference_coord[0] + primary_edge.offset[0]),
+                        int(reference_coord[1] + primary_edge.offset[1]),
                     ]
 
         nearby_nodes: list[MapNode] = []
         if primary_coord is not None:
-            nearby_nodes = self._nearby_nodes(primary_coord)
-            if previous is not None:
-                nearby_nodes = [n for n in nearby_nodes if n.uid != previous.uid]
+            nearby_nodes = self._nearby_nodes(primary_coord)[:2]
+            if reference_node is not None:
+                nearby_nodes = [n for n in nearby_nodes if n.uid != reference_node.uid]
 
-        bad = False
         conflict_count = 0
         if primary_edge is not None and primary_coord is not None:
             total_edges = 1 + len(nearby_nodes)
@@ -284,6 +459,7 @@ class MapGraphBuilder:
                 edges.extend(accepted_edges)
         elif self.graph.nodes:
             node.status = "orphan"
+            bad = True
 
         if bad:
             node.status = "bad"

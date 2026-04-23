@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "ahk[binary]>=1.8.4",
     "dxcam[cv2]>=0.3.0",
-    "ipython>=9.12.0",
+    "gymnasium>=1.2.3",
     "msgpack>=1.1.2",
     "numpy>=2.4.4",
     "opencv-python>=4.13.0.92",
@@ -16,15 +16,12 @@ dependencies = [
     "pyopengl>=3.1.10",
     "pyopengl-accelerate>=3.1.10",
     "pyside6-essentials>=6.11.0",
-    "pytest>=9.0.3",
     "python-box>=7.4.1",
     "pywin32>=311",
-    "pyzmq>=27.1.0",
+    "psutil>=7.0.0",
     "qasync>=0.28.0",
-    "ruff>=0.15.11",
     "scikit-image>=0.26.0",
-    "ty>=0.0.29",
-    "zmq>=0.0.0",
+    "stable-baselines3>=2.8.0",
 ]
 
 [build-system]
@@ -41,6 +38,14 @@ packages = ["./assistant/"]
 
 [tool.ty.environment]
 python = ".venv"  # Relative path to your venv root
+
+[dependency-groups]
+dev = [
+    "ipython>=9.12.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.11",
+    "ty>=0.0.29",
+]
 
 [project.scripts]
 assistant = "assistant.__main__:main"

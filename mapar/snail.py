@@ -10,6 +10,7 @@ from box import Box
 from pathlib import Path
 import win32gui  # ty:ignore[unresolved-import]
 from common import Rect, UiLocation, get_screen_rect, label_brect
+from map_graph import MapGraphBuilder
 
 WIDGET_MINIMUM_AREA = 50 * 50
 
@@ -114,6 +115,13 @@ class Snail:
         self._dxgi_backend = "dxcam"
         self.dxgi_fps = 120
         self.debug_ui_rect = None
+        self.track_character_coord = bool(self.cache.get('track_character_coord', False))
+        character_coord = self.cache.get('character_coord')
+        if character_coord is not None:
+            self.character_coord = (int(character_coord[0]), int(character_coord[1]))
+        else:
+            self.character_coord = None
+        self.map_graph_builder = MapGraphBuilder()
 
     def __enter__(self):
         logging.info('Starting snail')
@@ -186,7 +194,24 @@ class Snail:
         self.cache.window_rect = self.window_rect_key
         self.cache.non_ui_rect = str(self.non_ui_rect)
         self.cache.ui_brects = [str(r) for r in getattr(self, 'ui_brects', [])]
+        self.cache.track_character_coord = bool(getattr(self, 'track_character_coord', False))
+        character_coord = getattr(self, 'character_coord', None)
+        if character_coord is None:
+            self.cache.character_coord = None
+        else:
+            self.cache.character_coord = [int(character_coord[0]), int(character_coord[1])]
         self.cache.to_yaml(self.CACHE_FILE)
+
+    def set_character_coord(self, coord) -> None:
+        if coord is None:
+            self.character_coord = None
+        else:
+            self.character_coord = (int(coord[0]), int(coord[1]))
+        self._save_cache()
+
+    def set_track_character_coord(self, enabled: bool) -> None:
+        self.track_character_coord = bool(enabled)
+        self._save_cache()
 
     def filter_brects(self, rects: List[Rect], query: WidgetType = WidgetType.CENTRAL) -> Rect | None:
         win = Rect(0, 0, *self.window_rect.wh())
