@@ -11,7 +11,6 @@ dependencies = [
     "msgpack>=1.1.2",
     "numpy>=2.4.4",
     "opencv-python>=4.13.0.92",
-    "overlay",
     "pyaml>=26.2.1",
     "pyopengl>=3.1.10",
     "pyopengl-accelerate>=3.1.10",
@@ -22,6 +21,7 @@ dependencies = [
     "qasync>=0.28.0",
     "scikit-image>=0.26.0",
     "stable-baselines3>=2.8.0",
+    "overlay @ git+https://github.com/aash/overlay.git",
 ]
 
 [build-system]
@@ -31,7 +31,7 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 vc = { path = ".", editable = true }
-overlay = { path = "../overlay" }
+overlay = { path = "F:/projects/overlay" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["./assistant/"]
