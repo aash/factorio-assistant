@@ -611,7 +611,7 @@ def main():
     parser.add_argument('-v,--version', help='show version')
     args = parser.parse_args()  # noqa: F841
 
-    with overlay(force_socket_for_image=True) as ov, \
+    with overlay(force_socket_for_image=False, dirty_tracking=False) as ov, \
             Snail() as snail, \
             exit_hotkey(ahk=snail.ahk) as cmd_get, \
             hotkey_handler(ahk=snail.ahk, key='^p', cmd='input_prompt') as input_cmd_get, \
@@ -686,8 +686,7 @@ def main():
             if snail.track_character_coord:
                 _update_character_marker_from_frame(snail, img)
 
-            if _show_map_overlay and snail.track_character_coord:
-            #  and time.perf_counter() >= _character_marker_next_update_ts:
+            if _show_map_overlay and snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _draw_character_marker(loop_ctx)
 
             sample_scene_bloat(ov)
@@ -716,4 +715,4 @@ def main():
                     execute_action(action["name"], ctx)
                     _refresh_history_widget(ov, input_queue, r.xywh())
             # logging.info(f'{ov.list_scenes()['map_character_marker']}')
-            logging.info(f'{snail.character_coord}')
+            # logging.info(f'{snail.character_coord}')
