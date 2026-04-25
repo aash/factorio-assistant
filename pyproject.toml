@@ -21,7 +21,7 @@ dependencies = [
     "qasync>=0.28.0",
     "scikit-image>=0.26.0",
     "stable-baselines3>=2.8.0",
-    "overlay @ git+https://github.com/aash/overlay.git",
+    "overlay",
 ]
 
 [build-system]
@@ -32,6 +32,9 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 vc = { path = ".", editable = true }
 overlay = { path = "F:/projects/overlay" }
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["./assistant/"]
