@@ -296,8 +296,8 @@ def _draw_map_composite(ctx):
                 last_node = _map_coord_to_screen(last.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
 
     # _set_scene_visible(ctx.overlay, 'map_composite', True)
-    with ctx.overlay.scene('map_composite') as s:
-        s.image(origin_x, origin_y, display.shape[1], display.shape[0], png_bytes=memoryview(png))
+    with ctx.overlay.scene('map_composite').batch() as s:
+        s.image(origin_x, origin_y, display.shape[1], display.shape[0], png_bytes=png.tobytes())
         if _map_graph_builder is not None:
             for edge in _map_graph_builder.graph.edges:
                 if not edge.accepted:
@@ -611,7 +611,7 @@ def main():
     parser.add_argument('-v,--version', help='show version')
     args = parser.parse_args()  # noqa: F841
 
-    with overlay(force_socket_for_image=False, dirty_tracking=False) as ov, \
+    with overlay(force_socket_for_image=True, dirty_tracking=False) as ov, \
             Snail() as snail, \
             exit_hotkey(ahk=snail.ahk) as cmd_get, \
             hotkey_handler(ahk=snail.ahk, key='^p', cmd='input_prompt') as input_cmd_get, \
