@@ -30,7 +30,9 @@ build-backend = "hatchling.build"
 
 
 [tool.uv.sources]
-vc = { path = ".", editable = true }
+root = { path = ".", editable = true }
+mapar = { path = "mapar", editable = true }
+assistant = { path = "assistant", editable = true }
 overlay = { path = "F:/projects/overlay" }
 
 [tool.hatch.build.targets.wheel]

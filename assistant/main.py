@@ -24,8 +24,10 @@ HISTORY_MARGIN = 10
 HISTORY_BG_ALPHA = 160
 MAP_ANCHOR_X = 40
 MAP_ANCHOR_Y = 140
-CHARACTER_MARKER_SIZE = 400
-CHARACTER_MARKER_FPS = 30
+MAP_CAPTURE_WINDOW_SIZE = 400
+CHARACTER_MARKER_SIZE = MAP_CAPTURE_WINDOW_SIZE
+CHARACTER_TRACKING_WINDOW_SIZE = 128 + 64
+CHARACTER_MARKER_FPS = 15
 CHARACTER_MARKER_CONFIDENCE_THRESHOLD = 0.4
 CHARACTER_MARKER_SIMPLE_CONFIDENCE_THRESHOLD = 0.4
 
@@ -80,6 +82,7 @@ _show_map_overlay = True
 _show_map_node_hover = False
 _character_marker_coord = None
 _character_marker_prev_crop = None
+_character_tracking_window_size = CHARACTER_TRACKING_WINDOW_SIZE
 _character_marker_next_update_ts = 0.0
 _map_node_hover_next_update_ts = 0.0
 _show_ui_brect_marks = False
@@ -180,15 +183,33 @@ def _map_scene_geometry():
     return origin_x, origin_y, min_x, min_y, tile_w, tile_h
 
 
-def _character_crop_rect(snail):
+def _center_square_rect(snail, size_px: int) -> Rect:
     r = snail.window_rect
-    dims = numpy.array([CHARACTER_MARKER_SIZE, CHARACTER_MARKER_SIZE])
+    dims = numpy.array([size_px, size_px])
     cent = r.wh() // 2
     return Rect.from_centdims(*cent, *dims)
 
 
+def _map_tile_match_window_size() -> int:
+    if _map_tiles:
+        return int(_map_tiles[0].shape[0])
+    return MAP_CAPTURE_WINDOW_SIZE
+
+
+def _character_crop_rect(snail):
+    return _center_square_rect(snail, _character_tracking_window_size)
+
+
+def _map_tile_crop_rect(snail):
+    return _center_square_rect(snail, _map_tile_match_window_size())
+
+
 def _capture_character_crop(snail, img):
     return crop_image(img, _character_crop_rect(snail))
+
+
+def _capture_map_tile_crop(snail, img):
+    return crop_image(img, _map_tile_crop_rect(snail))
 
 
 def _seed_character_marker(ctx):
@@ -196,13 +217,15 @@ def _seed_character_marker(ctx):
 
     logging.info('seeding character marker start: cached_coord=%s tracking=%s', ctx.snail.character_coord, ctx.snail.track_character_coord)
     img = ctx.snail.wait_next_frame()
-    crop = _capture_character_crop(ctx.snail, img)
+
+    # Seeding must use map-tile-sized crop to match graph node image dimensions.
+    seed_crop = _capture_map_tile_crop(ctx.snail, img)
 
     if ctx.snail.character_coord is not None:
         anchor = [int(ctx.snail.character_coord[0]), int(ctx.snail.character_coord[1])]
         logging.info('seeding character marker: validating cached coord against nearby graph nodes: anchor=%s', anchor)
         found = ctx.snail.map_graph_builder.find_best_coord_from_image(
-            crop,
+            seed_crop,
             CHARACTER_MARKER_CONFIDENCE_THRESHOLD,
             anchor_coord=anchor,
             nearby_limit=3,
@@ -210,7 +233,7 @@ def _seed_character_marker(ctx):
         if found is None:
             logging.info('seeding character marker: nearby validation failed, falling back to full graph search')
             found = ctx.snail.map_graph_builder.find_best_coord_from_image(
-                crop,
+                seed_crop,
                 CHARACTER_MARKER_CONFIDENCE_THRESHOLD,
             )
         if found is None:
@@ -221,7 +244,7 @@ def _seed_character_marker(ctx):
     else:
         logging.info('seeding character marker: cached coord unavailable, starting full graph search')
         found = ctx.snail.map_graph_builder.find_best_coord_from_image(
-            crop,
+            seed_crop,
             CHARACTER_MARKER_CONFIDENCE_THRESHOLD,
         )
         if found is None:
@@ -231,8 +254,8 @@ def _seed_character_marker(ctx):
         logging.info('seeding character marker: accepted coord=%s from full graph search', _character_marker_coord)
         ctx.snail.set_character_coord(_character_marker_coord)
 
-    _character_marker_prev_crop = crop
-    _character_marker_next_update_ts = time.perf_counter() + (1.0 / CHARACTER_MARKER_FPS)
+    # Tracking uses smaller crop for faster phase correlation.
+    _character_marker_prev_crop = _capture_character_crop(ctx.snail, img)
     _draw_character_marker(ctx, force=True)
     logging.info('character marker seeded at %s', _character_marker_coord)
     return True
@@ -447,17 +470,14 @@ def map_capture(ctx: ActionContext):
     global _map_tiles, _map_offsets, _map_composite, _map_graph_builder, _map_composite_pngbytes
 
     img = ctx.snail.wait_next_frame()
-    r = ctx.snail.window_rect
-    w = 400
+    w = MAP_CAPTURE_WINDOW_SIZE
     if len(ctx.args) > 0:
         try:
             w = int(ctx.args[0])
         except Exception as e:
             logging.info(f'invalid argument passed {e}')
 
-    dims = numpy.array([w, w])
-    cent = r.wh() // 2
-    rr = Rect.from_centdims(*cent, *dims)
+    rr = _center_square_rect(ctx.snail, w)
     crop = crop_image(img, rr)
 
     if _map_graph_builder is None:
@@ -642,6 +662,7 @@ def main():
         UNITS_PER_SECOND = 1000
         stats_sampler = ProcessStatsSampler()
         t0fps = time.perf_counter()
+        _character_marker_next_update_ts = 0.0
 
         while is_not_timeout():
             img = snail.wait_next_frame()
@@ -665,10 +686,12 @@ def main():
                 fps = len(tfps) * UNITS_PER_SECOND / sum(tfps)
                 hud.rect(26, 54, 340, 76, pen_color=None, brush_color=(0, 0, 0, 80))
                 hud.text(40, 80, f'{t:6.3f}  FPS {fps:06.1f}', (0, 255, 0, 255), "JetBrainsMono NFM", 10)
+                assistant_mem = stats.get("assistant_mem", (assistant_stats.memory_bytes if assistant_stats else 0))
+                overlay_mem = stats.get("overlay_mem", (overlay_stats.memory_bytes if overlay_stats else 0))
                 hud.text(
                     40,
                     98,
-                    f'as cpu {stats.get("assistant_cpu", 0.0):05.1f}% mem {((assistant_stats.memory_bytes if assistant_stats else 0) / (1024 * 1024)):06.1f}MB',
+                    f'as cpu {stats.get("assistant_cpu", 0.0):05.1f}% mem {(assistant_mem / (1024 * 1024)):06.1f}MB',
                     (0, 255, 0, 255),
                     "JetBrainsMono NFM",
                     10,
@@ -676,7 +699,7 @@ def main():
                 hud.text(
                     40,
                     116,
-                    f'ov cpu {stats.get("overlay_cpu", 0.0):05.1f}% mem {((overlay_stats.memory_bytes if overlay_stats else 0) / (1024 * 1024)):06.1f}MB',
+                    f'ov cpu {stats.get("overlay_cpu", 0.0):05.1f}% mem {(overlay_mem / (1024 * 1024)):06.1f}MB',
                     (0, 255, 0, 255),
                     "JetBrainsMono NFM",
                     10,
@@ -693,8 +716,9 @@ def main():
             if _show_map_overlay and _show_map_node_hover and time.perf_counter() >= _map_node_hover_next_update_ts:
                 _draw_map_node_mouse_hover(loop_ctx)
 
-            if snail.track_character_coord:
+            if snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _update_character_marker_from_frame(snail, img)
+                _character_marker_next_update_ts = time.perf_counter() + (1.0 / CHARACTER_MARKER_FPS)
 
             if _show_map_overlay and snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _draw_character_marker(loop_ctx)
