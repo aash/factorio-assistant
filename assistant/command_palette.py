@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 import time
 from queue import Empty
@@ -74,11 +75,11 @@ def command_palette_prompt(ov, screen_rect, get_actions, fuzzy_match):
                     break
                 etype = event["type"]
                 value = event["value"]
-                if etype == "char" and value != '':
+                if etype == "char" and str.isprintable(value):
                     query += value
                     selected_idx = 0
                     start_idx = 0
-                elif etype == "up":
+                elif etype == "down":
                     if value == 'Backspace':
                         query = query[:-1]
                         selected_idx = 0
@@ -114,8 +115,6 @@ def command_palette_prompt(ov, screen_rect, get_actions, fuzzy_match):
                 if selected_idx >= start_idx + MAX_VISIBLE_RESULTS:
                     start_idx = max(0, selected_idx - MAX_VISIBLE_RESULTS + 1)
                 draw_command_palette(ov, query, results, selected_idx, screen_rect, start_idx)
-            sample_scene_bloat(ov)
             app.processEvents()
-            time.sleep(0.010)
 
     return submitted, query, selected_idx_final, results

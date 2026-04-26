@@ -71,6 +71,7 @@ _screenshot_counter = 0
 _map_tiles = []
 _map_offsets = []
 _map_composite = None
+_map_composite_pngbytes = None
 _map_graph_builder = None
 _map_prev_crop = None
 _map_cum_offset = None
@@ -143,7 +144,7 @@ def _hide_map_scenes(ov):
 
 
 def _refresh_map_composite_from_graph(builder):
-    global _map_tiles, _map_offsets, _map_composite
+    global _map_tiles, _map_offsets, _map_composite, _map_composite_pngbytes
     tiles = []
     offsets = []
     for node in builder.graph.nodes.values():
@@ -161,8 +162,11 @@ def _refresh_map_composite_from_graph(builder):
         _map_composite = blend_translated(tiles, offsets)
         logging.info('refreshed map composite, blend complete')
         save_composite_image(_map_composite)
+        _, png = cv2.imencode('.png', _map_composite)
+        _map_composite_pngbytes = png.tobytes()
     else:
         _map_composite = None
+        _map_composite_pngbytes = None
 
 
 def _map_scene_geometry():
@@ -276,14 +280,15 @@ def _update_character_marker_from_frame(snail, img):
 
 
 def _draw_map_composite(ctx):
+    global _map_composite_pngbytes
     if _map_composite is None:
         _set_scene_visible(ctx.overlay, 'map_composite', False)
         return
     assert _map_composite is not None
 
     origin_x, origin_y, min_x, min_y, tile_w, tile_h = _map_scene_geometry()
-    display = _map_composite
-    _, png = cv2.imencode('.png', display)
+    _map_shape = _map_composite.shape
+    # _, png = cv2.imencode('.png', display)
     edge_color = (0, 255, 0, 120)
 
     # get screen coords of last added node
@@ -296,8 +301,9 @@ def _draw_map_composite(ctx):
                 last_node = _map_coord_to_screen(last.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
 
     # _set_scene_visible(ctx.overlay, 'map_composite', True)
-    with ctx.overlay.scene('map_composite').batch() as s:
-        s.image(origin_x, origin_y, display.shape[1], display.shape[0], png_bytes=png.tobytes())
+    with ctx.overlay.scene_delta('map_composite') as s:
+        if _map_composite_pngbytes is not None:
+            s.image(origin_x, origin_y, _map_shape[1], _map_shape[0], png_bytes=_map_composite_pngbytes)
         if _map_graph_builder is not None:
             for edge in _map_graph_builder.graph.edges:
                 if not edge.accepted:
@@ -438,7 +444,7 @@ def take_center_screenshot(ctx: ActionContext):
 
 @action_decorator(name="map_capture", desc="Capture tile and blend into map composite. Arg: tile size px", hotkey="^7")
 def map_capture(ctx: ActionContext):
-    global _map_tiles, _map_offsets, _map_composite, _map_graph_builder
+    global _map_tiles, _map_offsets, _map_composite, _map_graph_builder, _map_composite_pngbytes
 
     img = ctx.snail.wait_next_frame()
     r = ctx.snail.window_rect
@@ -468,6 +474,8 @@ def map_capture(ctx: ActionContext):
         _map_composite = blend_translated(_map_tiles, _map_offsets)
         logging.info('map_capture, blended fully')
         save_composite_image(_map_composite)
+        _, png = cv2.imencode('.png', _map_composite)
+        _map_composite_pngbytes = png.tobytes()
 
     logging.info(
         'map_capture: uid=%s coord=%s time_of_day=%.3f status=%s edges=%d bad=%s add_node_ms=%.2f',
@@ -590,6 +598,7 @@ def toggle_history(ctx: ActionContext):
 
 
 def _reload_map_from_storage(snail, ov):
+    logging.info('reload map from storage')
     global _map_graph_builder, _map_tiles, _map_offsets, _map_composite, _map_composite_dirty
     _map_graph_builder = snail.map_graph_builder
     _refresh_map_composite_from_graph(_map_graph_builder)
@@ -611,7 +620,7 @@ def main():
     parser.add_argument('-v,--version', help='show version')
     args = parser.parse_args()  # noqa: F841
 
-    with overlay(force_socket_for_image=True, dirty_tracking=False) as ov, \
+    with overlay(force_socket_for_image=False, dirty_tracking=False) as ov, \
             Snail() as snail, \
             exit_hotkey(ahk=snail.ahk) as cmd_get, \
             hotkey_handler(ahk=snail.ahk, key='^p', cmd='input_prompt') as input_cmd_get, \
@@ -632,9 +641,9 @@ def main():
         tfps = collections.deque([0] * 60, maxlen=60)
         UNITS_PER_SECOND = 1000
         stats_sampler = ProcessStatsSampler()
+        t0fps = time.perf_counter()
 
         while is_not_timeout():
-            t0fps = time.perf_counter()
             img = snail.wait_next_frame()
             # img1 = cv2.resize(img, None, fx=0.25, fy=0.25)
 
@@ -645,6 +654,7 @@ def main():
 
             #     ss.image(5, 40, w, h, png_bytes=memoryview(b))  # ty:ignore[invalid-argument-type]
             dtfps = int((time.perf_counter() - t0fps) * UNITS_PER_SECOND)
+            t0fps = time.perf_counter()
             tfps.appendleft(dtfps)
             stats = stats_sampler.sample()
             assistant_stats = stats.get('assistant')
@@ -676,7 +686,7 @@ def main():
             if _show_map_overlay:
                 #  and _map_composite_dirty:
                 _draw_map_composite(loop_ctx)
-                # _map_composite_dirty = False
+                _map_composite_dirty = False
                 _draw_map_node_mouse_hover(loop_ctx, force=True)
                 _draw_character_marker(loop_ctx, force=True)
 
@@ -714,5 +724,4 @@ def main():
                     ctx = ActionContext(snail=snail, overlay=ov, args=args)
                     execute_action(action["name"], ctx)
                     _refresh_history_widget(ov, input_queue, r.xywh())
-            # logging.info(f'{ov.list_scenes()['map_character_marker']}')
-            # logging.info(f'{snail.character_coord}')
+            
