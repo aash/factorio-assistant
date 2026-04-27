@@ -8,11 +8,20 @@ from common import exit_hotkey, hotkey_handler, timeout
 from common import label_brect
 from mapar import Snail
 from overlay import overlay
-from assistant import fuzzy_match, execute_action, ActionContext, register_actions, get_actions
+from assistant import fuzzy_match, fuzzy_match_pi, execute_action, ActionContext, register_actions, get_actions
 from assistant.command_palette import command_palette_prompt
 from assistant.system_stats import ProcessStatsSampler
 from assistant.scene_bloat import sample_scene_bloat
+from assistant.pid_controller import (
+    PID_CFG_DEFAULT,
+    ensure_pid_cfg_loaded,
+    save_pid_cfg,
+    _run_pid_episode,
+    _auto_tune_move_pid_gen,
+    _benchmark_move_pid_gen,
+)
 import argparse
+from collections.abc import Generator
 from graphics import crop_image, Rect, blend_translated
 from entity_detector import deduce_frame_offset, deduce_frame_offset_verified
 from map_graph import drop_map_graph, MapGraphBuilder
@@ -30,6 +39,12 @@ CHARACTER_TRACKING_WINDOW_SIZE = 128 + 64
 CHARACTER_MARKER_FPS = 60
 CHARACTER_MARKER_CONFIDENCE_THRESHOLD = 0.4
 CHARACTER_MARKER_SIMPLE_CONFIDENCE_THRESHOLD = 0.4
+
+_PID_CFG_DEFAULT = dict(PID_CFG_DEFAULT)
+_pid_cfg = dict(_PID_CFG_DEFAULT)
+_pid_cfg_loaded = False
+_pid_tune_task: Generator[None, None, None] | None = None
+_pid_benchmark_task: Generator[None, None, None] | None = None
 
 
 def draw_history(ov, input_queue, screen_rect):
@@ -121,6 +136,22 @@ def _draw_ui_brect_marks(ov, snail):
 def _map_coord_to_screen(coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h):
     dx, dy = coord
     return origin_x + (dx - min_x) + tile_w // 2, origin_y + (dy - min_y) + tile_h // 2
+
+
+def _screen_to_map_coord(x: int, y: int, origin_x: int, origin_y: int, min_x: int, min_y: int, tile_w: int, tile_h: int) -> tuple[int, int]:
+    dx = int(round((x - origin_x) - (tile_w // 2) + min_x))
+    dy = int(round((y - origin_y) - (tile_h // 2) + min_y))
+    return dx, dy
+
+
+def _ensure_pid_cfg_loaded(snail):
+    global _pid_cfg_loaded, _pid_cfg
+    _pid_cfg, _pid_cfg_loaded = ensure_pid_cfg_loaded(snail, _pid_cfg, _pid_cfg_loaded)
+
+
+def _save_pid_cfg(snail):
+    save_pid_cfg(snail, _pid_cfg)
+    # snail.cache.to_yaml(snail.CACHE_FILE)
 
 
 def _mark_map_composite_dirty():
@@ -440,6 +471,196 @@ def _get_hovered_map_node(ctx):
     return hovered_node
 
 
+def _has_pid_background_task() -> bool:
+    return _pid_tune_task is not None or _pid_benchmark_task is not None
+
+
+def _poll_pid_tasks():
+    global _pid_tune_task, _pid_benchmark_task
+
+    if _pid_tune_task is not None:
+        try:
+            next(_pid_tune_task)
+        except StopIteration:
+            _pid_tune_task = None
+            logging.info('auto_tune_move_pid task completed')
+        except Exception as e:
+            _pid_tune_task = None
+            logging.info('auto_tune_move_pid task failed: %s', e)
+
+    if _pid_benchmark_task is not None:
+        try:
+            next(_pid_benchmark_task)
+        except StopIteration:
+            _pid_benchmark_task = None
+            logging.info('benchmark_move_pid task completed')
+        except Exception as e:
+            _pid_benchmark_task = None
+            logging.info('benchmark_move_pid task failed: %s', e)
+
+
+@action_decorator(name="move_to_mouse_map_coord", desc="Move character toward mouse-projected map coord using PID", hotkey="^m")
+def move_to_mouse_map_coord(ctx: ActionContext):
+    _ensure_pid_cfg_loaded(ctx.snail)
+
+    if ctx.snail.character_coord is None:
+        logging.info('pid move aborted: character_coord is unknown')
+        return
+    if not _map_tiles:
+        logging.info('pid move aborted: map tiles are empty')
+        return
+
+    try:
+        mouse = ctx.snail.ahk.get_mouse_position(coord_mode='Screen')
+    except Exception as e:
+        logging.info('pid move aborted: failed reading mouse position: %s', e)
+        return
+    if mouse is None:
+        logging.info('pid move aborted: mouse position unavailable')
+        return
+
+    origin_x, origin_y, min_x, min_y, tile_w, tile_h = _map_scene_geometry()
+    target = _screen_to_map_coord(int(mouse.x), int(mouse.y), origin_x, origin_y, min_x, min_y, tile_w, tile_h)
+    logging.info('pid move target: screen=(%s,%s) -> map=%s current=%s', int(mouse.x), int(mouse.y), target, ctx.snail.character_coord)
+
+    result = _run_pid_episode(ctx, target, _pid_cfg)
+    logging.info(
+        'pid move done: target=%s score=%.3f dist=%.2f delay=%.3f switches=%d timeout=%s',
+        target,
+        float(result['score']),
+        float(result['final_dist']),
+        float(result['delay_mean']),
+        int(float(result['switches'])),
+        bool(result['timeout']),
+    )
+
+
+@action_decorator(name="tune_move_pid", desc="Tune PID params: kp,ki,kd,dt,tolerance,deadzone,max_time", hotkey="^+m")
+def tune_move_pid(ctx: ActionContext):
+    _ensure_pid_cfg_loaded(ctx.snail)
+
+    if not ctx.args:
+        logging.info(
+            'pid params: kp=%.4f ki=%.4f kd=%.4f dt=%.3f tol=%.2f deadzone=%.3f max_time=%.2f',
+            _pid_cfg['kp'], _pid_cfg['ki'], _pid_cfg['kd'], _pid_cfg['dt'],
+            _pid_cfg['tolerance'], _pid_cfg['deadzone'], _pid_cfg['max_time'],
+        )
+        logging.info('usage: tune_move_pid kp=0.8,ki=0.0,kd=0.1,dt=0.05,tolerance=2,deadzone=0.15,max_time=8')
+        return
+
+    updates: dict[str, float] = {}
+    for raw in ctx.args:
+        token = raw.strip()
+        if not token:
+            continue
+        if '=' not in token:
+            logging.info('ignored token (expected key=value): %s', token)
+            continue
+        key, value = token.split('=', 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key not in _pid_cfg:
+            logging.info('unknown pid key: %s', key)
+            continue
+        try:
+            updates[key] = float(value)
+        except ValueError:
+            logging.info('invalid float for %s: %s', key, value)
+
+    if not updates:
+        logging.info('no valid pid updates provided')
+        return
+
+    _pid_cfg.update(updates)
+    _save_pid_cfg(ctx.snail)
+    logging.info('pid params updated: %s', {k: _pid_cfg[k] for k in sorted(_pid_cfg.keys())})
+
+
+@action_decorator(name="benchmark_move_pid", desc="Run PID benchmark episodes and log trajectory/delay metrics (non-blocking)")
+def benchmark_move_pid(ctx: ActionContext):
+    global _pid_benchmark_task
+    _ensure_pid_cfg_loaded(ctx.snail)
+
+    if _has_pid_background_task():
+        logging.info('benchmark_move_pid cannot start: another PID task is running')
+        return
+
+    params = {
+        'radius': 20,
+        'targets': 5,
+    }
+    for raw in ctx.args:
+        token = raw.strip()
+        if '=' not in token:
+            continue
+        k, v = token.split('=', 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if k in params:
+            try:
+                params[k] = int(float(v))
+            except ValueError:
+                logging.info('benchmark_move_pid invalid %s=%s', k, v)
+
+    _pid_benchmark_task = _benchmark_move_pid_gen(ctx, params, _pid_cfg)
+    logging.info('benchmark_move_pid started (radius=%s targets=%s)', params['radius'], params['targets'])
+
+
+@action_decorator(name="stop_benchmark_move_pid", desc="Stop running non-blocking PID benchmark")
+def stop_benchmark_move_pid(ctx: ActionContext):
+    del ctx
+    global _pid_benchmark_task
+    if _pid_benchmark_task is None:
+        logging.info('benchmark_move_pid is not running')
+        return
+    _pid_benchmark_task = None
+    logging.info('benchmark_move_pid stopped')
+
+
+@action_decorator(name="auto_tune_move_pid", desc="Auto-tune PID by minimizing trajectory+delay score (non-blocking)")
+def auto_tune_move_pid(ctx: ActionContext):
+    global _pid_tune_task
+    _ensure_pid_cfg_loaded(ctx.snail)
+
+    if _has_pid_background_task():
+        logging.info('auto_tune_move_pid cannot start: another PID task is running')
+        return
+
+    opts = {
+        'iters': 10,
+        'radius': 100,
+        'targets': 4,
+        'step': 0.35,
+    }
+    for raw in ctx.args:
+        token = raw.strip()
+        if '=' not in token:
+            continue
+        k, v = token.split('=', 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if k not in opts:
+            continue
+        try:
+            opts[k] = float(v) if k == 'step' else int(float(v))
+        except ValueError:
+            logging.info('auto_tune_move_pid invalid %s=%s', k, v)
+
+    _pid_tune_task = _auto_tune_move_pid_gen(ctx, opts, _pid_cfg, lambda: _save_pid_cfg(ctx.snail))
+    logging.info('auto_tune_move_pid started (iters=%s radius=%s targets=%s step=%s)', opts['iters'], opts['radius'], opts['targets'], opts['step'])
+
+
+@action_decorator(name="stop_auto_tune_move_pid", desc="Stop running non-blocking PID auto-tuning")
+def stop_auto_tune_move_pid(ctx: ActionContext):
+    del ctx
+    global _pid_tune_task
+    if _pid_tune_task is None:
+        logging.info('auto_tune_move_pid is not running')
+        return
+    _pid_tune_task = None
+    logging.info('auto_tune_move_pid stopped')
+
+
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
 def take_center_screenshot(ctx: ActionContext):
     global _screenshot_counter
@@ -527,6 +748,7 @@ def drop_map_graph_action(ctx: ActionContext):
     _map_tiles = []
     _map_offsets = []
     _map_composite = None
+    _map_composite_pngbytes = None
     _map_composite_dirty = False
     ctx.snail.map_graph_builder = type(ctx.snail.map_graph_builder)()
     _map_graph_builder = ctx.snail.map_graph_builder
@@ -719,6 +941,9 @@ def main():
             if snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _update_character_marker_from_frame(snail, img)
                 _character_marker_next_update_ts = time.perf_counter() + (1.0 / CHARACTER_MARKER_FPS)
+
+            # Progress non-blocking PID tasks on each frame.
+            _poll_pid_tasks()
 
             if _show_map_overlay and snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _draw_character_marker(loop_ctx)
