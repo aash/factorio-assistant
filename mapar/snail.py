@@ -207,11 +207,11 @@ class Snail:
             self.character_coord = None
         else:
             self.character_coord = (int(coord[0]), int(coord[1]))
-        self._save_cache()
+        # self._save_cache()
 
     def set_track_character_coord(self, enabled: bool) -> None:
         self.track_character_coord = bool(enabled)
-        self._save_cache()
+        # self._save_cache()
 
     def filter_brects(self, rects: List[Rect], query: WidgetType = WidgetType.CENTRAL) -> Rect | None:
         win = Rect(0, 0, *self.window_rect.wh())
