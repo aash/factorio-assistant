@@ -736,7 +736,7 @@ def main():
                         ov,
                         r.xywh(),
                         get_actions,
-                        fuzzy_match,
+                        fuzzy_match_pi,
                     )
                 finally:
                     _set_scene_visible(ov, 'input', False)
