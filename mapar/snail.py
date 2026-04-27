@@ -113,7 +113,7 @@ class Snail:
             self.cache_path.write_text('{}\n', encoding='utf-8')
         self.cache = Box.from_yaml(filename=self.CACHE_FILE) or Box()
         self._dxgi_backend = "dxcam"
-        self.dxgi_fps = 30
+        self.dxgi_fps = 60
         self.debug_ui_rect = None
         self.track_character_coord = bool(self.cache.get('track_character_coord', False))
         character_coord = self.cache.get('character_coord')
