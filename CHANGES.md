@@ -2,6 +2,32 @@
 
 Impact legend: 🔹 Low / 🔸 Med / 🔺 High
 
+## 🔺 cd01939 / 2026-04-28 / refactor: introduce event bus architecture with leaf/snail separation
+
+**Explanation**
+- Added pyventus-based event bus infrastructure (SnailEventBus, LeafEventBus) for decoupling game state from presentation.
+- Extracted game state into SnailState and overlay/presentation state into LeafState dataclasses.
+- Moved all overlay rendering into leaf/renderers/ with 8 dedicated modules called from the main loop.
+- Rewired screenshot actions to emit snail.screenshot.* events handled by Snail service methods.
+
+---
+
+## 🔸 c0e9b0d / 2026-04-28 / move Snail mapar -> assistant
+
+**Explanation**
+- Moved the Snail class from the mapar package to the assistant package with backward-compatible re-export.
+- Added screenshot capture service methods to Snail (window, non-UI, center).
+
+---
+
+## 🔹 ddde90c / 2026-04-28 / standardize changelog format and add agents workflow guide
+
+**Explanation**
+- Established AGENTS.md with workflow rules for maintaining CHANGES.md from git history.
+- Standardized impact labeling (🔹 Low / 🔸 Med / 🔺 High) and section formatting.
+
+---
+
 ## 🔺 b730695 / 2026-04-28 / refactor map graph services and improve overlay validation
 
 **Explanation**
