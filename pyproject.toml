@@ -19,6 +19,7 @@ dependencies = [
     "python-box>=7.4.1",
     "pywin32>=311",
     "psutil>=7.0.0",
+    "pyventus>=0.8.0",
     "qasync>=0.28.0",
     "scikit-image>=0.26.0",
     "stable-baselines3>=2.8.0",
@@ -33,10 +34,11 @@ build-backend = "hatchling.build"
 root = { path = ".", editable = true }
 mapar = { path = "mapar", editable = true }
 assistant = { path = "assistant", editable = true }
+leaf = { path = "leaf", editable = true }
 overlay = { path = "F:/projects/overlay" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["./assistant/"]
+packages = ["./assistant/", "./leaf/"]
 
 [tool.ty.environment]
 python = ".venv"  # Relative path to your venv root

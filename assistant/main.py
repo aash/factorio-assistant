@@ -1,3 +1,4 @@
+from assistant.snail_state import SnailState
 from overlay.overlay_client import configure_logging
 import numpy
 import logging
@@ -13,6 +14,14 @@ from overlay import overlay, SceneDelta
 from assistant import fuzzy_match, fuzzy_match_pi, execute_action, ActionContext, register_actions, get_actions
 from assistant.command_palette import command_palette_prompt
 from assistant.system_stats import ProcessStatsSampler
+from leaf.state import LeafState
+from leaf.renderers.hud import draw_hud
+from leaf.renderers.map_composite import draw_map_composite, clear_last_node_marker
+from leaf.renderers.character_marker import draw_character_marker
+from leaf.renderers.map_hover import draw_map_node_mouse_hover
+from leaf.renderers.coords import map_scene_geometry
+from assistant.event_bus import snail_events, SnailEventBus
+from assistant import events
 from assistant.scene_bloat import sample_scene_bloat
 from assistant.pid_controller import (
     PID_CFG_DEFAULT,
@@ -68,23 +77,19 @@ def draw_history(ov, input_queue, screen_rect):
                    color=(220, 220, 220, 255), font="JetBrainsMono NFM", size=10)
 
 
-@action_decorator(name="clear", desc="Clears overlay", hotkey='^!c')
-def clear(ctx: ActionContext):
-    ov = ctx.overlay
-    _hide_map_scenes(ov)
-
 @action_decorator(name="take_window_screenshot", desc="Takes screenshot of window's full client area and saves it in the root directory", hotkey="^5")
 def take_window_screenshot(ctx: ActionContext):
-    img = ctx.snail.wait_next_frame()
-    cv2.imwrite('screen.png', img)
+    """Emit a window screenshot request."""
+    snail_events.emit(events.SNAIL_SCREENSHOT_WINDOW)
+
 
 @action_decorator(name="take_non_ui_screenshot", desc="Takes screenshot of non UI detected area and saves it in the root directory")
 def take_screenshot(ctx: ActionContext):
-    img = ctx.snail.wait_next_frame()
-    non_ui_img = crop_image(img, ctx.snail.non_ui_rect)
-    cv2.imwrite('screen_non_ui.png', non_ui_img)
+    """Emit a non-UI screenshot request."""
+    snail_events.emit(events.SNAIL_SCREENSHOT_NON_UI)
 
-_screenshot_counter = 0
+
+_snail_state: SnailState | None = None
 
 _map_tiles = []
 _map_offsets = []
@@ -929,27 +934,26 @@ def stop_auto_tune_move_pid(ctx: ActionContext):
 
 @action_decorator(name="take_center_screenshot", desc="Takes 100x100 screenshot around center of window", hotkey="^6")
 def take_center_screenshot(ctx: ActionContext):
-    global _screenshot_counter
-    img = ctx.snail.wait_next_frame()
-    r = ctx.snail.window_rect
-    logging.info(f'action arguments: {ctx.args}')
+    """Emit a centered square screenshot request.
+
+    Passes the optional pixel-size argument as event payload.
+    """
+    global _snail_state
+    assert _snail_state is not None, "snail_state not initialized"
+
     w = 100
-    if len(ctx.args) > 0:
+    if ctx.args:
         try:
             w = int(ctx.args[0])
-        except Exception as e:
-            logging.info(f'invalid argument passed {e}')
-    dims = numpy.array([w, w])
-    cent = r.wh() // 2
-    rr = Rect.from_centdims(*cent, *dims)
-    crop = crop_image(img, rr)
-    logging.info(f'crop rect: {rr}')
+        except (ValueError, IndexError):
+            logging.info("invalid size argument, using default 100")
 
-    logging.info(f'{r} {img.shape}')
-    logging.info(f'{crop.shape}')
-    _screenshot_counter += 1
-    filename = f"scrn_{_screenshot_counter:04d}.png"
-    cv2.imwrite(filename, crop)
+    _snail_state.screenshot_counter += 1
+    snail_events.emit(
+        events.SNAIL_SCREENSHOT_CENTER,
+        size=w,
+        counter=_snail_state.screenshot_counter,
+    )
 
 
 @action_decorator(name="map_capture", desc="Capture tile and blend into map composite. Arg: tile size px", hotkey="^7")
@@ -1134,12 +1138,31 @@ def main():
         global _history_queue
         _history_queue = input_queue
         r = snail.window_rect
+        leaf_state = LeafState()
+        snail_state = SnailState()
+        global _snail_state
+        _snail_state = snail_state
         register_actions(snail, ov)
         _reload_map_from_storage(snail, ov)
         if snail.track_character_coord:
             if not _seed_character_marker(ActionContext(snail=snail, overlay=ov, args=[])):
                 snail.set_track_character_coord(False)
 
+        # Wire screenshot event handlers to snail services
+        SnailEventBus.subscribe(
+            events.SNAIL_SCREENSHOT_WINDOW,
+            event_callback=lambda: snail.save_window_screenshot(),
+        )
+        SnailEventBus.subscribe(
+            events.SNAIL_SCREENSHOT_NON_UI,
+            event_callback=lambda: snail.save_non_ui_screenshot(),
+        )
+        SnailEventBus.subscribe(
+            events.SNAIL_SCREENSHOT_CENTER,
+            event_callback=lambda size, counter: snail.save_center_screenshot(
+                size=size, counter=counter
+            ),
+        )
 
         t0 = time.monotonic()
         tfps = collections.deque([0] * 60, maxlen=60)
@@ -1170,39 +1193,29 @@ def main():
             overlay_mem = int(stats.get("overlay_mem", (overlay_stats.memory_bytes if overlay_stats else 0)))
             now_ts = time.monotonic()
 
-            with ov.scene('hud') as hud:
-                # hud.destroy()
-                t = now_ts - t0
-                fps = len(tfps) * UNITS_PER_SECOND / sum(tfps)
-                hud.rect(26, 54, 340, 76, pen_color=None, brush_color=(0, 0, 0, 80))
-                hud.text(40, 80, f'{t:6.3f}  FPS {fps:06.1f}', (0, 255, 0, 255), "JetBrainsMono NFM", 10)
-                hud.text(
-                    40,
-                    98,
-                    f'as cpu {assistant_cpu:05.1f}% mem {(assistant_mem / (1024 * 1024)):06.1f}MB',
-                    (0, 255, 0, 255),
-                    "JetBrainsMono NFM",
-                    10,
-                )
-                hud.text(
-                    40,
-                    116,
-                    f'ov cpu {overlay_cpu:05.1f}% mem {(overlay_mem / (1024 * 1024)):06.1f}MB',
-                    (0, 255, 0, 255),
-                    "JetBrainsMono NFM",
-                    10,
-                )
+            draw_hud(ov, now_ts - t0, tfps,
+                     assistant_cpu, overlay_cpu,
+                     assistant_mem, overlay_mem)
 
             loop_ctx = ActionContext(snail=snail, overlay=ov, args=[])
             if _show_map_overlay:
-                #  and _map_composite_dirty:
-                _draw_map_composite(loop_ctx)
+                draw_map_composite(ov, leaf_state,
+                    _map_tiles, _map_offsets,
+                    _map_composite, _map_composite_pngbytes,
+                    _map_graph_builder,
+                    _last_node_marker_active, _last_node_marker_uid)
                 _map_composite_dirty = False
-                _draw_map_node_mouse_hover(loop_ctx, force=True)
-                _draw_character_marker(loop_ctx, force=True)
+                draw_map_node_mouse_hover(ov, leaf_state,
+                    snail.ahk, _map_graph_builder,
+                    _map_offsets, _map_tiles, force=True)
+                draw_character_marker(ov, leaf_state,
+                    snail.track_character_coord, _character_marker_coord,
+                    _map_tiles, _map_offsets, force=True)
 
             if _show_map_overlay and _show_map_node_hover and time.perf_counter() >= _map_node_hover_next_update_ts:
-                _draw_map_node_mouse_hover(loop_ctx)
+                draw_map_node_mouse_hover(ov, leaf_state,
+                    snail.ahk, _map_graph_builder,
+                    _map_offsets, _map_tiles)
 
             if snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _update_character_marker_from_frame(snail, img)
@@ -1212,7 +1225,10 @@ def main():
             _poll_pid_tasks()
 
             if _show_map_overlay and snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
-                _draw_character_marker(loop_ctx)
+                leaf_state.character_marker_next_update_ts = _character_marker_next_update_ts
+                draw_character_marker(ov, leaf_state,
+                    snail.track_character_coord, _character_marker_coord,
+                    _map_tiles, _map_offsets)
 
             # if snail.track_character_coord:
             #     _validate_character_coord_against_graph(loop_ctx, img)
