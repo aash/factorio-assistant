@@ -33,14 +33,10 @@ class ProcessStatsSampler:
         self,
         assistant_pid: int | None = None,
         sample_rate: float = 0.1,
-        cpu_alpha: float = 0.25,
-        mem_alpha: float = 0.20,
     ):
         self.assistant_pid = int(assistant_pid or os.getpid())
         self.overlay_pid: int | None = None
         self.sample_rate = sample_rate
-        self.cpu_alpha = max(0.0, min(1.0, cpu_alpha))
-        self.mem_alpha = max(0.0, min(1.0, mem_alpha))
 
         self._last_sample_ts: float = 0.0
         self._prev_sample_ts: float = 0.0
@@ -48,8 +44,6 @@ class ProcessStatsSampler:
         self._last_cpu_percent: dict[int, float] = {}
         self._last_stats: dict[int, ProcessStat] = {}
 
-        self._smoothed_cpu_percent: dict[int, float] = {}
-        self._smoothed_memory_bytes: dict[int, float] = {}
 
     def _resolve_overlay_pid(self) -> int | None:
         best_pid = None
@@ -80,12 +74,6 @@ class ProcessStatsSampler:
                 best_score = score
                 best_pid = child.pid
         return best_pid
-
-    @staticmethod
-    def _ema(previous: float | None, value: float, alpha: float) -> float:
-        if previous is None:
-            return value
-        return (alpha * value) + ((1.0 - alpha) * previous)
 
     def sample(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -119,16 +107,6 @@ class ProcessStatsSampler:
             self._last_stats[pid] = snap
             self._last_cpu_percent[pid] = cpu_percent[pid]
 
-            self._smoothed_cpu_percent[pid] = self._ema(
-                self._smoothed_cpu_percent.get(pid),
-                cpu_percent[pid],
-                self.cpu_alpha,
-            )
-            self._smoothed_memory_bytes[pid] = self._ema(
-                self._smoothed_memory_bytes.get(pid),
-                float(snap.memory_bytes),
-                self.mem_alpha,
-            )
 
         self._prev_sample_ts = now
         return self._format_cached()
@@ -146,15 +124,19 @@ class ProcessStatsSampler:
         assistant_pid = self.assistant_pid
         overlay_pid = self.overlay_pid or -1
 
+        assistant_mem = int(assistant.memory_bytes) if assistant else 0
+        overlay_mem = int(overlay.memory_bytes) if overlay else 0
+        assistant_cpu = self._last_cpu_percent.get(assistant_pid, 0.0)
+        overlay_cpu = self._last_cpu_percent.get(overlay_pid, 0.0)
+
         return {
             "assistant": assistant,
             "overlay": overlay,
-            # Smoothed values (default for HUD)
-            "assistant_cpu": self._smoothed_cpu_percent.get(assistant_pid, 0.0),
-            "overlay_cpu": self._smoothed_cpu_percent.get(overlay_pid, 0.0),
-            "assistant_mem": int(self._smoothed_memory_bytes.get(assistant_pid, float(assistant.memory_bytes if assistant else 0))),
-            "overlay_mem": int(self._smoothed_memory_bytes.get(overlay_pid, float(overlay.memory_bytes if overlay else 0))),
-            # Raw values (for diagnostics)
-            "assistant_cpu_raw": self._last_cpu_percent.get(assistant_pid, 0.0),
-            "overlay_cpu_raw": self._last_cpu_percent.get(overlay_pid, 0.0),
+            "assistant_cpu": assistant_cpu,
+            "overlay_cpu": overlay_cpu,
+            "assistant_mem": assistant_mem,
+            "overlay_mem": overlay_mem,
+            # Kept for compatibility with existing callers.
+            "assistant_cpu_raw": assistant_cpu,
+            "overlay_cpu_raw": overlay_cpu,
         }

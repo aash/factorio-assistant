@@ -126,7 +126,7 @@ class Snail:
     def __enter__(self):
         logging.info('Starting snail')
         self.dxgi_dxcam_device = dxcam.create(
-            backend="dxgi", # default Desktop Duplication backend
+            backend="winrt", # default Desktop Duplication backend
             processor_backend="cv2", # default OpenCV processor
             output_color="BGR",
             region=self.window_rect.xyxy(),

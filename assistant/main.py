@@ -1,5 +1,7 @@
+from overlay.overlay_client import configure_logging
 import numpy
 import logging
+import math
 from assistant.actions import action_decorator
 import cv2
 import collections
@@ -7,7 +9,7 @@ import time
 from common import exit_hotkey, hotkey_handler, timeout
 from common import label_brect
 from mapar import Snail
-from overlay import overlay
+from overlay import overlay, SceneDelta
 from assistant import fuzzy_match, fuzzy_match_pi, execute_action, ActionContext, register_actions, get_actions
 from assistant.command_palette import command_palette_prompt
 from assistant.system_stats import ProcessStatsSampler
@@ -22,10 +24,9 @@ from assistant.pid_controller import (
 )
 import argparse
 from collections.abc import Generator
-from graphics import crop_image, Rect, blend_translated
+from graphics import crop_image, Rect
 from entity_detector import deduce_frame_offset, deduce_frame_offset_verified
-from map_graph import drop_map_graph, MapGraphBuilder
-from map_graph.store import save_composite_image, save_graph, delete_node_image
+from map_graph import MapGraphBuilder
 
 HISTORY_MAX = 10
 HISTORY_LINE_H = 22
@@ -103,10 +104,16 @@ _map_node_hover_next_update_ts = 0.0
 _show_ui_brect_marks = False
 _history_queue = None
 _show_history_widget = False
+_last_node_marker_active = False
+_last_node_marker_uid: str | None = None
+_map_composite_scene_origin: tuple[int, int] | None = None
+_character_coord_validate_next_ts = 0.0
+_map_edge_scene_verify_next_ts = 0.0
 
 _scene_visibility = {
     'history': False,
     'input': False,
+    'map_composite_image': True,
     'map_composite': True,
     'map_node_mouse_hover': False,
     'map_character_marker': False,
@@ -144,6 +151,20 @@ def _screen_to_map_coord(x: int, y: int, origin_x: int, origin_y: int, min_x: in
     return dx, dy
 
 
+def _canonical_edge_key(edge) -> tuple[str, str]:
+    from_uid = str(edge.from_uid)
+    to_uid = str(edge.to_uid)
+    if from_uid <= to_uid:
+        return from_uid, to_uid
+    return to_uid, from_uid
+
+
+def _sorted_line_coords(x1: int, y1: int, x2: int, y2: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    if (x1, y1) <= (x2, y2):
+        return (x1, y1), (x2, y2)
+    return (x2, y2), (x1, y1)
+
+
 def _ensure_pid_cfg_loaded(snail):
     global _pid_cfg_loaded, _pid_cfg
     _pid_cfg, _pid_cfg_loaded = ensure_pid_cfg_loaded(snail, _pid_cfg, _pid_cfg_loaded)
@@ -172,38 +193,42 @@ def _set_scene_visible(ov, name: str, visible: bool):
 
 
 def _hide_map_scenes(ov):
+    global _map_composite_scene_origin
+    _set_scene_visible(ov, 'map_composite_image', False)
     _set_scene_visible(ov, 'map_composite', False)
     _set_scene_visible(ov, 'map_node_mouse_hover', False)
     _set_scene_visible(ov, 'map_character_marker', False)
+    _clear_last_node_marker(ov)
+    _map_composite_scene_origin = None
 
 
-def _refresh_map_composite_from_graph(builder):
+def _refresh_map_composite_from_graph(builder: MapGraphBuilder):
     global _map_tiles, _map_offsets, _map_composite, _map_composite_pngbytes
-    tiles = []
-    offsets = []
-    for node in builder.graph.nodes.values():
-        if node.coord is None:
-            continue
-        img = cv2.imread(node.image_path)
-        if img is None:
-            continue
-        tiles.append(img)
-        offsets.append((int(node.coord[0]), int(node.coord[1])))
-
+    tiles, offsets, composite = builder.load_composite()
     _map_tiles = tiles
     _map_offsets = offsets
-    if tiles:
-        _map_composite = blend_translated(tiles, offsets)
-        logging.info('refreshed map composite, blend complete')
-        save_composite_image(_map_composite)
-        _, png = cv2.imencode('.png', _map_composite)
-        _map_composite_pngbytes = png.tobytes()
-    else:
-        _map_composite = None
-        _map_composite_pngbytes = None
+    _map_composite = composite
+
+    png_bytes = builder.composite_png_bytes
+    if png_bytes is not None:
+        png_bytes = bytes(png_bytes)
+        if not _validate_png_bytes(png_bytes):
+            logging.warning('invalid map composite png cache; clearing png bytes')
+            png_bytes = None
+    _map_composite_pngbytes = png_bytes
+
+
+def _validate_png_bytes(png_bytes: bytes) -> bool:
+    try:
+        buffer = numpy.frombuffer(png_bytes, dtype=numpy.uint8)
+        decoded = cv2.imdecode(buffer, cv2.IMREAD_UNCHANGED)
+        return decoded is not None
+    except Exception:
+        return False
 
 
 def _map_scene_geometry():
+    global _map_offsets, _map_tiles
     r = Rect(0, 0, 1920, 1080 * 2)  # ctx.snail.window_rect
     min_x = min(dx for dx, _ in _map_offsets) if _map_offsets else 0
     min_y = min(dy for _, dy in _map_offsets) if _map_offsets else 0
@@ -333,9 +358,93 @@ def _update_character_marker_from_frame(snail, img):
     return updated
 
 
-def _draw_map_composite(ctx):
-    global _map_composite_pngbytes
+def _verify_scene_primitives_present(ov, scene_name: str, expected_ids: set[str]) -> None:
+    if not expected_ids:
+        return
+    try:
+        layers = ov.get_render_list()
+    except Exception as exc:
+        logging.debug('scene primitive verification failed to fetch render list (ignored): %s', exc)
+        return
+
+    scene_cmds = None
+    for _z, name, cmds in layers:
+        if name == scene_name:
+            scene_cmds = cmds
+            break
+    if scene_cmds is None:
+        logging.warning('scene %s not present in render list while expecting %d primitives', scene_name, len(expected_ids))
+        return
+
+    present_ids: set[str] = set()
+    for entry in scene_cmds:
+        # Render list for scene APIs is [prim_id, cmd]. Ignore malformed entries.
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            continue
+        prim_id, cmd = entry[0], entry[1]
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            continue
+        present_ids.add(str(prim_id))
+
+    expected_ids_norm = {str(v) for v in expected_ids}
+    missing = expected_ids_norm - present_ids
+    if missing:
+        sample = list(sorted(missing))[:3]
+        logging.warning(
+            'scene %s missing %d/%d expected primitive IDs (sample=%s)',
+            scene_name,
+            len(missing),
+            len(expected_ids_norm),
+            sample,
+        )
+
+
+def _assert_map_composite_image_scene_has_single_image(ov) -> None:
+    try:
+        layers = ov.get_render_list()
+    except Exception as exc:
+        logging.info('map_composite_image verification failed to fetch render list: %s', exc)
+        raise AssertionError('map_composite_image scene verification failed: render list unavailable') from exc
+
+    scene_cmds = None
+    for _z, name, cmds in layers:
+        if name == 'map_composite_image':
+            scene_cmds = cmds
+            break
+
+    if scene_cmds is None:
+        logging.info('map_composite_image scene missing in render list')
+        raise AssertionError('map_composite_image scene missing in render list')
+
+    image_count = 0
+    primitive_kinds: list[str] = []
+    for entry in scene_cmds:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            primitive_kinds.append('<invalid>')
+            continue
+        cmd = entry[1]
+        if not isinstance(cmd, (list, tuple)) or not cmd:
+            primitive_kinds.append('<invalid>')
+            continue
+        kind = str(cmd[0])
+        primitive_kinds.append(kind)
+        if kind == 'image':
+            image_count += 1
+
+    if image_count != 1:
+        logging.info(
+            'map_composite_image scene expected exactly one image, got image_count=%d total_primitives=%d kinds=%s',
+            image_count,
+            len(scene_cmds),
+            primitive_kinds,
+        )
+    assert image_count == 1, f'map_composite_image scene expected exactly one image primitive, got {image_count}'
+
+
+def _draw_map_composite(ctx: ActionContext):
+    global _map_composite_pngbytes, _map_composite_scene_origin, _map_edge_scene_verify_next_ts
     if _map_composite is None:
+        _set_scene_visible(ctx.overlay, 'map_composite_image', False)
         _set_scene_visible(ctx.overlay, 'map_composite', False)
         return
     assert _map_composite is not None
@@ -345,46 +454,123 @@ def _draw_map_composite(ctx):
     # _, png = cv2.imencode('.png', display)
     edge_color = (0, 255, 0, 120)
 
+    # new_origin = (origin_x, origin_y)
+    # if _map_composite_scene_origin != new_origin:
+    #     try:
+    #         ctx.overlay.destroy_scene('map_composite_image')
+    #         ctx.overlay.destroy_scene('map_composite')
+    #         ctx.overlay.destroy_scene('map_last_node_marker')
+    #         ctx.overlay.destroy_scene('map_character_marker')
+    #         with ctx.overlay.scene('map_composite') as s:
+    #             s.line(0,0, 1, 1, (0,0,0,0), 1)
+
+    #     except Exception as exc:
+    #         logging.debug('map composite scene reset failed (ignored): %s', exc)
+    #     _map_composite_scene_origin = new_origin
+    #     logging.debug('map composite scene reset due to map composite origin drift')
+
     # get screen coords of last added node
-    last_node = None
+    last_node_screen = None
+    last_node_uid: str | None = None
     if _map_graph_builder is not None:
         graph = _map_graph_builder.graph
         if graph.last_uid is not None:
             last = graph.nodes.get(graph.last_uid)
             if last is not None and last.coord is not None:
-                last_node = _map_coord_to_screen(last.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
+                last_node_screen = _map_coord_to_screen(last.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
+                last_node_uid = graph.last_uid
 
-    # _set_scene_visible(ctx.overlay, 'map_composite', True)
-    with ctx.overlay.scene_delta('map_composite') as s:
+    ctx.overlay.set_scene_z('map_composite_image', 0)
+    ctx.overlay.set_scene_z('map_composite', 10)
+    ctx.overlay.set_scene_z('map_character_marker', 998)
+
+    with ctx.overlay.scene_delta('map_composite_image') as s_img:
+        pass
         if _map_composite_pngbytes is not None:
-            s.image(origin_x, origin_y, _map_shape[1], _map_shape[0], png_bytes=_map_composite_pngbytes)
+            s_img.image(origin_x, origin_y, _map_shape[1], _map_shape[0], png_bytes=_map_composite_pngbytes)
+
+    expected_prim_ids: set[str] = set()
+    with ctx.overlay.scene_delta('map_composite') as s:
         if _map_graph_builder is not None:
-            for edge in _map_graph_builder.graph.edges:
-                if not edge.accepted:
-                    continue
-                from_node = _map_graph_builder.graph.nodes.get(edge.from_uid)
-                to_node = _map_graph_builder.graph.nodes.get(edge.to_uid)
+            edge_pairs: set[tuple[str, str]] = {
+                _canonical_edge_key(edge)
+                for edge in _map_graph_builder.graph.edges
+                if edge.accepted
+            }
+            # logging.info(f'draw edges {len(edge_pairs)}')
+            for from_uid, to_uid in sorted(edge_pairs):
+                from_node = _map_graph_builder.graph.nodes.get(from_uid)
+                to_node = _map_graph_builder.graph.nodes.get(to_uid)
                 if from_node is None or to_node is None:
                     continue
                 if from_node.coord is None or to_node.coord is None:
                     continue
                 x1, y1 = _map_coord_to_screen(from_node.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
                 x2, y2 = _map_coord_to_screen(to_node.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
-                s.line(x1, y1, x2, y2, color=edge_color, width=1)
+                (nx1, ny1), (nx2, ny2) = _sorted_line_coords(x1, y1, x2, y2)
+                prim_id = s.line(nx1, ny1, nx2, ny2, color=edge_color, width=1)
+                expected_prim_ids.add(prim_id)
+            # assert len(expected_prim_ids) == len(edge_pairs), f'{len(expected_prim_ids)},{len(edge_pairs)}'
+
+        # logging.info(f'{expected_edge_prim_ids}')
         for dx, dy in _map_offsets:
             cx, cy = _map_coord_to_screen((dx, dy), origin_x, origin_y, min_x, min_y, tile_w, tile_h)
-            s.line(cx - 7, cy, cx + 7, cy, color=(255, 0, 0, 180), width=3)
-            s.line(cx, cy - 7, cx, cy + 7, color=(255, 0, 0, 180), width=3)
+            (lx1, ly1), (lx2, ly2) = _sorted_line_coords(cx - 7, cy, cx + 7, cy)
+            s.line(lx1, ly1, lx2, ly2, color=(255, 0, 0, 180), width=3)
+            (lyx1, lyy1), (lyx2, lyy2) = _sorted_line_coords(cx, cy - 7, cx, cy + 7)
+            s.line(lyx1, lyy1, lyx2, lyy2, color=(255, 0, 0, 180), width=3)
             s.text(cx - 12 + 10, cy + 4 - 10, f'{dx},{dy}',
-                   color=(255, 230, 120, 128), font='JetBrainsMono NFM', size=7)
-        if last_node is not None:
-            cx, cy = last_node
-            s.ellipse(cx - 12, cy - 12, 24, 24,
-                      pen_color=(255, 220, 0, 255), pen_width=2,
-                      brush_color=(0, 0, 0, 0))
-            s.ellipse(cx - 4, cy - 4, 8, 8,
-                      pen_color=(255, 220, 0, 255), pen_width=1,
-                      brush_color=(255, 220, 0, 96))
+                   color=(255, 230, 120, 255), font='JetBrainsMono NFM', size=9)
+
+    # now_verify = time.perf_counter()
+    # if now_verify >= _map_edge_scene_verify_next_ts:
+    #     _assert_map_composite_image_scene_has_single_image(ctx.overlay)
+    #     _map_edge_scene_verify_next_ts = now_verify + 1.0
+
+    if last_node_screen is not None and last_node_uid is not None:
+        if last_node_uid != _last_node_marker_uid:
+            _draw_last_node_marker(ctx, last_node_screen, last_node_uid)
+    else:
+        _clear_last_node_marker(ctx.overlay)
+
+
+def _draw_last_node_marker(ctx: ActionContext, screen_coord: tuple[int, int], node_uid: str):
+    global _last_node_marker_active, _last_node_marker_uid
+    if _last_node_marker_active and _last_node_marker_uid != node_uid:
+        logging.warning(
+            'last node marker scene was still active before redraw; clearing existing marker (prev=%s new=%s)',
+            _last_node_marker_uid,
+            node_uid,
+        )
+        try:
+            ctx.overlay.destroy_scene('map_last_node_marker')
+        except Exception as exc:
+            logging.warning('failed to destroy existing last node marker scene: %s', exc)
+    elif _last_node_marker_active and _last_node_marker_uid == node_uid:
+        return
+
+    with ctx.overlay.scene('map_last_node_marker') as s:
+        s.set_z(999)
+        cx, cy = screen_coord
+        s.ellipse(cx - 12, cy - 12, 24, 24,
+                  pen_color=(255, 220, 0, 255), pen_width=2,
+                  brush_color=(0, 0, 0, 0))
+        s.ellipse(cx - 4, cy - 4, 8, 8,
+                  pen_color=(255, 220, 0, 255), pen_width=1,
+                  brush_color=(255, 220, 0, 96))
+    _last_node_marker_active = True
+    _last_node_marker_uid = node_uid
+
+
+def _clear_last_node_marker(ov):
+    global _last_node_marker_active, _last_node_marker_uid
+    if _last_node_marker_active:
+        try:
+            ov.destroy_scene('map_last_node_marker')
+        except Exception as exc:
+            logging.warning('failed to destroy last node marker scene: %s', exc)
+        _last_node_marker_active = False
+        _last_node_marker_uid = None
 
 
 def _draw_map_node_mouse_hover(ctx, force=False):
@@ -425,6 +611,7 @@ def _draw_character_marker(ctx, force=False):
     cx, cy = _map_coord_to_screen(_character_marker_coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
     _set_scene_visible(ctx.overlay, 'map_character_marker', True)
     with ctx.overlay.scene('map_character_marker') as s:
+        s.set_z(998)
         ccx, ccy = _character_marker_coord
         s.text(cx+20,cy, f'{ccx},{ccy}', color=(220, 220, 220, 255), font="JetBrainsMono NFM", size=8)
         s.ellipse(cx - 10, cy - 10, 20, 20,
@@ -433,6 +620,85 @@ def _draw_character_marker(ctx, force=False):
         s.ellipse(cx - 5, cy - 5, 10, 10,
                   pen_color=(255, 255, 255, 255), pen_width=1,
                   brush_color=(255, 255, 255, 96))
+
+
+def _validate_character_coord_against_graph(ctx: ActionContext, img=None) -> None:
+    global _character_coord_validate_next_ts, _character_marker_coord
+    now = time.perf_counter()
+    if now < _character_coord_validate_next_ts:
+        return
+    _character_coord_validate_next_ts = now + 1.0
+
+    builder = _map_graph_builder or ctx.snail.map_graph_builder
+    if builder is None:
+        return
+
+    coord = ctx.snail.character_coord or _character_marker_coord
+    if coord is None:
+        return
+
+    tile_crop = None
+    if img is not None:
+        try:
+            tile_crop = _capture_map_tile_crop(ctx.snail, img)
+            validation = builder.validate_image_coord_against_graph(tile_crop, (float(coord[0]), float(coord[1])))
+            if validation.ok and validation.inferred_coord is not None:
+                corrected = [
+                    int(round(validation.inferred_coord[0])),
+                    int(round(validation.inferred_coord[1])),
+                ]
+                drift = math.hypot(float(corrected[0]) - float(coord[0]), float(corrected[1]) - float(coord[1]))
+                if drift > 2.0 and (_character_marker_coord != corrected or ctx.snail.character_coord != corrected):
+                    _character_marker_coord = corrected
+                    ctx.snail.set_character_coord(corrected)
+                return
+        except Exception as exc:
+            logging.debug('char coord graph validation failed (ignored): %s', exc)
+
+    if tile_crop is not None:
+        found = builder.find_best_coord_from_image(
+            tile_crop,
+            CHARACTER_MARKER_CONFIDENCE_THRESHOLD,
+            anchor_coord=[int(coord[0]), int(coord[1])],
+            nearby_limit=3,
+        )
+        if found is None:
+            found = builder.find_best_coord_from_image(
+                tile_crop,
+                CHARACTER_MARKER_CONFIDENCE_THRESHOLD,
+            )
+        if found is not None:
+            corrected = [int(found[0]), int(found[1])]
+            drift = math.hypot(float(corrected[0]) - float(coord[0]), float(corrected[1]) - float(coord[1]))
+            if drift > 2.0 and (_character_marker_coord != corrected or ctx.snail.character_coord != corrected):
+                _character_marker_coord = corrected
+                ctx.snail.set_character_coord(corrected)
+                logging.info('char coord recalculated from graph: %s -> %s (drift=%.2f)', coord, corrected, drift)
+            return
+
+    nearest = builder.find_nearest_nodes_to_coord(coord, limit=1)
+    if not nearest:
+        logging.warning('char coord %s has no nearby map graph nodes and graph recalc failed', coord)
+        return
+
+    node = nearest[0]
+    if node.coord is None:
+        return
+
+    dx = coord[0] - int(node.coord[0])
+    dy = coord[1] - int(node.coord[1])
+    dist = math.hypot(dx, dy)
+    tile_size = builder.tile_size or [256, 256]
+    tolerance = max(int(tile_size[0]), 128)
+    if dist > tolerance:
+        logging.warning(
+            'char coord %s is %.1f px away from nearest map node %s (%s) (tolerance=%d)',
+            coord,
+            dist,
+            node.uid,
+            node.coord,
+            tolerance,
+        )
 
 
 def _get_hovered_map_node(ctx):
@@ -688,7 +954,7 @@ def take_center_screenshot(ctx: ActionContext):
 
 @action_decorator(name="map_capture", desc="Capture tile and blend into map composite. Arg: tile size px", hotkey="^7")
 def map_capture(ctx: ActionContext):
-    global _map_tiles, _map_offsets, _map_composite, _map_graph_builder, _map_composite_pngbytes
+    global _map_graph_builder
 
     img = ctx.snail.wait_next_frame()
     w = MAP_CAPTURE_WINDOW_SIZE
@@ -709,14 +975,8 @@ def map_capture(ctx: ActionContext):
         anchor_coord = [int(ctx.snail.character_coord[0]), int(ctx.snail.character_coord[1])]
     capture = _map_graph_builder.add_capture(crop, anchor_coord=anchor_coord)
 
-    if capture.node.status == 'ok' and capture.node.coord is not None:
-        _map_tiles.append(crop)
-        _map_offsets.append((int(round(capture.node.coord[0])), int(round(capture.node.coord[1]))))
-        _map_composite = blend_translated(_map_tiles, _map_offsets)
-        logging.info('map_capture, blended fully')
-        save_composite_image(_map_composite)
-        _, png = cv2.imencode('.png', _map_composite)
-        _map_composite_pngbytes = png.tobytes()
+    # Rebuild from graph so _map_composite and _map_composite_pngbytes are always synchronized.
+    _refresh_map_composite_from_graph(_map_graph_builder)
 
     logging.info(
         'map_capture: uid=%s coord=%s time_of_day=%.3f status=%s edges=%d bad=%s add_node_ms=%.2f',
@@ -729,7 +989,7 @@ def map_capture(ctx: ActionContext):
         capture.elapsed_ms,
     )
 
-    _draw_map_composite(ctx)
+    # _draw_map_composite(ctx)
 
 
 @action_decorator(name="map_clear", desc="Clear map composite", hotkey="^!7")
@@ -738,20 +998,21 @@ def map_clear(ctx: ActionContext):
     _map_tiles = []
     _map_offsets = []
     _map_composite = None
+    ctx.overlay.destroy_scene('map_composite_image')
     ctx.overlay.destroy_scene('map_composite')
 
 
 @action_decorator(name="drop_map_graph", desc="Delete persisted map graph and node images")
 def drop_map_graph_action(ctx: ActionContext):
-    global _map_tiles, _map_offsets, _map_composite, _map_graph_builder, _map_composite_dirty
-    drop_map_graph()
-    _map_tiles = []
-    _map_offsets = []
-    _map_composite = None
-    _map_composite_pngbytes = None
+    global _map_graph_builder, _map_composite_dirty
+    builder = _map_graph_builder if _map_graph_builder is not None else ctx.snail.map_graph_builder
+    builder.drop_graph()
+    _map_graph_builder = builder
+    ctx.snail.map_graph_builder = builder
+    ctx.overlay.destroy_scene('map_composite')
+    ctx.overlay.destroy_scene('map_composite_image')
+    _refresh_map_composite_from_graph(builder)
     _map_composite_dirty = False
-    ctx.snail.map_graph_builder = type(ctx.snail.map_graph_builder)()
-    _map_graph_builder = ctx.snail.map_graph_builder
     _hide_map_scenes(ctx.overlay)
     logging.info('map graph dropped')
 
@@ -760,8 +1021,8 @@ def drop_map_graph_action(ctx: ActionContext):
 def toggle_map_overlay(ctx: ActionContext):
     global _show_map_overlay, _map_composite_dirty, _map_node_hover_next_update_ts, _character_marker_next_update_ts
     _show_map_overlay = not _show_map_overlay
+    ctx.overlay.show_scene('map_composite_image', _show_map_overlay)
     ctx.overlay.show_scene('map_composite', _show_map_overlay)
-    # ctx.overlay.show_scene('map_composite', _show_map_overlay and ctx.snail.track_character_coord)
     if _show_map_overlay:
         _map_composite_dirty = True
         _map_node_hover_next_update_ts = 0.0
@@ -769,12 +1030,14 @@ def toggle_map_overlay(ctx: ActionContext):
         _draw_map_composite(ctx)
         _draw_map_node_mouse_hover(ctx, force=True)
         _draw_character_marker(ctx, force=True)
+    else:
+        _hide_map_scenes(ctx.overlay)
     logging.info('map overlay %s', 'enabled' if _show_map_overlay else 'disabled')
 
 
 @action_decorator(name="delete_hovered_map_node", desc="Delete the hovered map graph node", hotkey="^!d")
 def delete_hovered_map_node(ctx: ActionContext):
-    global _map_graph_builder, _map_tiles, _map_offsets, _map_composite, _map_composite_dirty
+    global _map_graph_builder
     hovered_node = _get_hovered_map_node(ctx)
     if hovered_node is None:
         logging.info('no hovered map node to delete')
@@ -784,13 +1047,10 @@ def delete_hovered_map_node(ctx: ActionContext):
     builder = _map_graph_builder
     if builder is None:
         return
-    graph = builder.graph
-    graph.nodes.pop(uid, None)
-    graph.edges = [edge for edge in graph.edges if edge.from_uid != uid and edge.to_uid != uid]
-    if graph.last_uid == uid:
-        graph.last_uid = next(iter(graph.nodes), None)
-    save_graph(graph)
-    delete_node_image(uid)
+    if not builder.remove_node(uid):
+        logging.info('failed to delete hovered map node %s', uid)
+        return
+
     _refresh_map_composite_from_graph(builder)
     if _show_map_overlay:
         _draw_map_composite(ctx)
@@ -843,6 +1103,7 @@ def _reload_map_from_storage(snail, ov):
     logging.info('reload map from storage')
     global _map_graph_builder, _map_tiles, _map_offsets, _map_composite, _map_composite_dirty
     _map_graph_builder = snail.map_graph_builder
+    _map_graph_builder.load_graph_from_disk()
     _refresh_map_composite_from_graph(_map_graph_builder)
     _map_composite_dirty = True
     logging.info(f'reload map from storage {_show_map_overlay}')
@@ -856,13 +1117,14 @@ def _reload_map_from_storage(snail, ov):
 
 
 def main():
+    # logging.basicConfig(level=logging.DEBUG)
     global _map_composite_dirty
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-v,--version', help='show version')
     args = parser.parse_args()  # noqa: F841
 
-    with overlay(force_socket_for_image=False, dirty_tracking=False) as ov, \
+    with overlay(force_socket_for_image=True) as ov, \
             Snail() as snail, \
             exit_hotkey(ahk=snail.ahk) as cmd_get, \
             hotkey_handler(ahk=snail.ahk, key='^p', cmd='input_prompt') as input_cmd_get, \
@@ -902,18 +1164,22 @@ def main():
             stats = stats_sampler.sample()
             assistant_stats = stats.get('assistant')
             overlay_stats = stats.get('overlay')
+            assistant_cpu = float(stats.get("assistant_cpu", 0.0))
+            overlay_cpu = float(stats.get("overlay_cpu", 0.0))
+            assistant_mem = int(stats.get("assistant_mem", (assistant_stats.memory_bytes if assistant_stats else 0)))
+            overlay_mem = int(stats.get("overlay_mem", (overlay_stats.memory_bytes if overlay_stats else 0)))
+            now_ts = time.monotonic()
+
             with ov.scene('hud') as hud:
                 # hud.destroy()
-                t = time.monotonic() - t0
+                t = now_ts - t0
                 fps = len(tfps) * UNITS_PER_SECOND / sum(tfps)
                 hud.rect(26, 54, 340, 76, pen_color=None, brush_color=(0, 0, 0, 80))
                 hud.text(40, 80, f'{t:6.3f}  FPS {fps:06.1f}', (0, 255, 0, 255), "JetBrainsMono NFM", 10)
-                assistant_mem = stats.get("assistant_mem", (assistant_stats.memory_bytes if assistant_stats else 0))
-                overlay_mem = stats.get("overlay_mem", (overlay_stats.memory_bytes if overlay_stats else 0))
                 hud.text(
                     40,
                     98,
-                    f'as cpu {stats.get("assistant_cpu", 0.0):05.1f}% mem {(assistant_mem / (1024 * 1024)):06.1f}MB',
+                    f'as cpu {assistant_cpu:05.1f}% mem {(assistant_mem / (1024 * 1024)):06.1f}MB',
                     (0, 255, 0, 255),
                     "JetBrainsMono NFM",
                     10,
@@ -921,7 +1187,7 @@ def main():
                 hud.text(
                     40,
                     116,
-                    f'ov cpu {stats.get("overlay_cpu", 0.0):05.1f}% mem {(overlay_mem / (1024 * 1024)):06.1f}MB',
+                    f'ov cpu {overlay_cpu:05.1f}% mem {(overlay_mem / (1024 * 1024)):06.1f}MB',
                     (0, 255, 0, 255),
                     "JetBrainsMono NFM",
                     10,
@@ -948,7 +1214,10 @@ def main():
             if _show_map_overlay and snail.track_character_coord and time.perf_counter() >= _character_marker_next_update_ts:
                 _draw_character_marker(loop_ctx)
 
-            sample_scene_bloat(ov)
+            # if snail.track_character_coord:
+            #     _validate_character_coord_against_graph(loop_ctx, img)
+
+            # sample_scene_bloat(ov)
 
             cmd = cmd_get()
             if cmd == 'exit':
