@@ -26,6 +26,7 @@ This repository uses an agent-assisted workflow for maintaining `CHANGES.md` fro
 5. Section separator:
    - `---`
 6. Do **not** include “Files changed” sections.
+7. Do **not** include commits which sole reason to update CHANGES.md
 
 ## Impact Markers
 
