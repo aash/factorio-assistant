@@ -7,7 +7,7 @@ import time
 from collections.abc import Generator, Mapping, MutableMapping
 from typing import Callable
 
-from assistant.actions import ActionContext
+
 
 
 PID_CFG_DEFAULT: dict[str, float] = {
@@ -72,7 +72,7 @@ def _pid_desired_keys(ux: float, uy: float, deadzone: float) -> set[str]:
     return desired
 
 
-def _run_pid_episode(ctx: ActionContext, target: tuple[int, int], cfg: Mapping[str, float]) -> dict[str, float | int | bool]:
+def _run_pid_episode(snail, target: tuple[int, int], cfg: Mapping[str, float]) -> dict[str, float | int | bool]:
     kp = float(cfg['kp'])
     ki = float(cfg['ki'])
     kd = float(cfg['kd'])
@@ -103,7 +103,7 @@ def _run_pid_episode(ctx: ActionContext, target: tuple[int, int], cfg: Mapping[s
     try:
         while True:
             now = time.perf_counter()
-            current = ctx.snail.character_coord
+            current = snail.character_coord
             if current is None:
                 break
             cur = (int(current[0]), int(current[1]))
@@ -129,7 +129,7 @@ def _run_pid_episode(ctx: ActionContext, target: tuple[int, int], cfg: Mapping[s
             if desired != pressed:
                 switches += 1
                 last_cmd_change_ts = now
-            _set_movement_keys(ctx.snail, desired, pressed)
+            _set_movement_keys(snail, desired, pressed)
 
             if prev_current is not None:
                 mv = (float(cur[0] - prev_current[0]), float(cur[1] - prev_current[1]))
@@ -149,9 +149,9 @@ def _run_pid_episode(ctx: ActionContext, target: tuple[int, int], cfg: Mapping[s
                 break
             time.sleep(dt)
     finally:
-        _set_movement_keys(ctx.snail, set(), pressed)
+        _set_movement_keys(snail, set(), pressed)
 
-    final = ctx.snail.character_coord
+    final = snail.character_coord
     final_dist = math.hypot(float(target[0] - int(final[0])), float(target[1] - int(final[1]))) if final is not None else 1e9
     delay_mean = (sum(delay_samples) / len(delay_samples)) if delay_samples else max_time
 
@@ -193,16 +193,16 @@ def _build_relative_targets(origin: tuple[int, int], radius: int) -> list[tuple[
     ]
 
 
-def _evaluate_pid_candidate(ctx: ActionContext, cfg: Mapping[str, float], radius: int, target_count: int) -> dict[str, float | int | bool]:
-    if ctx.snail.character_coord is None:
+def _evaluate_pid_candidate(snail, cfg: Mapping[str, float], radius: int, target_count: int) -> dict[str, float | int | bool]:
+    if snail.character_coord is None:
         return {'score': 1e9, 'failed': True}
 
-    origin = (int(ctx.snail.character_coord[0]), int(ctx.snail.character_coord[1]))
+    origin = (int(snail.character_coord[0]), int(snail.character_coord[1]))
     targets = _build_relative_targets(origin, radius)[:max(1, int(target_count))]
     episodes: list[dict[str, float | int | bool]] = []
     total = 0.0
     for target in targets:
-        ep = _run_pid_episode(ctx, target, cfg)
+        ep = _run_pid_episode(snail, target, cfg)
         episodes.append(ep)
         total += float(ep['score'])
 
@@ -214,7 +214,7 @@ def _evaluate_pid_candidate(ctx: ActionContext, cfg: Mapping[str, float], radius
     }
 
 
-def _run_pid_episode_gen(ctx: ActionContext, target: tuple[int, int], cfg: Mapping[str, float]) -> Generator[None, None, dict[str, float | int | bool]]:
+def _run_pid_episode_gen(snail, target: tuple[int, int], cfg: Mapping[str, float]) -> Generator[None, None, dict[str, float | int | bool]]:
     kp = float(cfg['kp'])
     ki = float(cfg['ki'])
     kd = float(cfg['kd'])
@@ -249,7 +249,7 @@ def _run_pid_episode_gen(ctx: ActionContext, target: tuple[int, int], cfg: Mappi
                 continue
             next_step_ts = now + dt
 
-            current = ctx.snail.character_coord
+            current = snail.character_coord
             if current is None:
                 break
             cur = (int(current[0]), int(current[1]))
@@ -275,7 +275,7 @@ def _run_pid_episode_gen(ctx: ActionContext, target: tuple[int, int], cfg: Mappi
             if desired != pressed:
                 switches += 1
                 last_cmd_change_ts = now
-            _set_movement_keys(ctx.snail, desired, pressed)
+            _set_movement_keys(snail, desired, pressed)
 
             if prev_current is not None:
                 mv = (float(cur[0] - prev_current[0]), float(cur[1] - prev_current[1]))
@@ -295,9 +295,9 @@ def _run_pid_episode_gen(ctx: ActionContext, target: tuple[int, int], cfg: Mappi
                 break
             yield
     finally:
-        _set_movement_keys(ctx.snail, set(), pressed)
+        _set_movement_keys(snail, set(), pressed)
 
-    final = ctx.snail.character_coord
+    final = snail.character_coord
     final_dist = math.hypot(float(target[0] - int(final[0])), float(target[1] - int(final[1]))) if final is not None else 1e9
     delay_mean = (sum(delay_samples) / len(delay_samples)) if delay_samples else max_time
 
@@ -323,15 +323,15 @@ def _run_pid_episode_gen(ctx: ActionContext, target: tuple[int, int], cfg: Mappi
     }
 
 
-def _evaluate_pid_candidate_gen(ctx: ActionContext, cfg: Mapping[str, float], radius: int, target_count: int) -> Generator[None, None, dict[str, float | int | bool]]:
-    if ctx.snail.character_coord is None:
+def _evaluate_pid_candidate_gen(snail, cfg: Mapping[str, float], radius: int, target_count: int) -> Generator[None, None, dict[str, float | int | bool]]:
+    if snail.character_coord is None:
         return {'score': 1e9, 'failed': True}
 
-    origin = (int(ctx.snail.character_coord[0]), int(ctx.snail.character_coord[1]))
+    origin = (int(snail.character_coord[0]), int(snail.character_coord[1]))
     targets = _build_relative_targets(origin, radius)[:max(1, int(target_count))]
     total = 0.0
     for target in targets:
-        ep = yield from _run_pid_episode_gen(ctx, target, cfg)
+        ep = yield from _run_pid_episode_gen(snail, target, cfg)
         total += float(ep['score'])
         yield
 
@@ -344,14 +344,14 @@ def _evaluate_pid_candidate_gen(ctx: ActionContext, cfg: Mapping[str, float], ra
 
 
 def _auto_tune_move_pid_gen(
-    ctx: ActionContext,
+    snail,
     opts: Mapping[str, int | float],
     pid_cfg: MutableMapping[str, float],
     on_save: Callable[[], None],
 ) -> Generator[None, None, None]:
     base = {k: float(pid_cfg[k]) for k in pid_cfg.keys()}
     best_cfg = dict(base)
-    best_eval = yield from _evaluate_pid_candidate_gen(ctx, best_cfg, radius=int(opts['radius']), target_count=int(opts['targets']))
+    best_eval = yield from _evaluate_pid_candidate_gen(snail, best_cfg, radius=int(opts['radius']), target_count=int(opts['targets']))
     best_score = float(best_eval['score'])
     logging.info('auto_tune_move_pid baseline score=%.3f cfg=%s', best_score, {k: round(best_cfg[k], 4) for k in sorted(best_cfg.keys())})
 
@@ -367,7 +367,7 @@ def _auto_tune_move_pid_gen(
         cand['tolerance'] = min(20.0, max(0.5, cand['tolerance'] * (1.0 + random.uniform(-step, step))))
         cand['dt'] = min(0.20, max(0.02, cand['dt'] * (1.0 + random.uniform(-0.2 * step, 0.2 * step))))
 
-        ev = yield from _evaluate_pid_candidate_gen(ctx, cand, radius=int(opts['radius']), target_count=int(opts['targets']))
+        ev = yield from _evaluate_pid_candidate_gen(snail, cand, radius=int(opts['radius']), target_count=int(opts['targets']))
         score = float(ev['score'])
         logging.info('auto_tune iter=%d/%d score=%.3f cand=%s', i + 1, iters, score, {k: round(cand[k], 4) for k in sorted(cand.keys())})
         if score < best_score:
@@ -379,7 +379,7 @@ def _auto_tune_move_pid_gen(
     pid_cfg.update(best_cfg)
     on_save()
 
-    ctx.snail.cache.pid_nav_last_autotune = {
+    snail.cache.pid_nav_last_autotune = {
         'best_score': float(best_score),
         'iters': iters,
         'radius': int(opts['radius']),
@@ -388,18 +388,18 @@ def _auto_tune_move_pid_gen(
         'best_cfg': {k: float(best_cfg[k]) for k in sorted(best_cfg.keys())},
         'ts': time.time(),
     }
-    ctx.snail.cache.to_yaml(ctx.snail.CACHE_FILE)
+    snail.cache.to_yaml(snail.CACHE_FILE)
 
     logging.info('auto_tune_move_pid done: best_score=%.3f cfg=%s', best_score, {k: round(best_cfg[k], 4) for k in sorted(best_cfg.keys())})
 
 
 def _benchmark_move_pid_gen(
-    ctx: ActionContext,
+    snail,
     params: Mapping[str, int],
     pid_cfg: Mapping[str, float],
 ) -> Generator[None, None, None]:
     result = yield from _evaluate_pid_candidate_gen(
-        ctx,
+        snail,
         pid_cfg,
         radius=int(params['radius']),
         target_count=int(params['targets']),
@@ -408,14 +408,14 @@ def _benchmark_move_pid_gen(
         logging.info('benchmark_move_pid failed: character_coord unavailable')
         return
 
-    ctx.snail.cache.pid_nav_last_benchmark = {
+    snail.cache.pid_nav_last_benchmark = {
         'params': {k: float(pid_cfg[k]) for k in sorted(pid_cfg.keys())},
         'score': float(result['score']),
         'radius': int(params['radius']),
         'targets': int(params['targets']),
         'ts': time.time(),
     }
-    ctx.snail.cache.to_yaml(ctx.snail.CACHE_FILE)
+    snail.cache.to_yaml(snail.CACHE_FILE)
 
     logging.info(
         'benchmark_move_pid score=%.3f radius=%d targets=%d params=%s',

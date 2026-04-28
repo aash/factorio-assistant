@@ -40,7 +40,8 @@ def get_hovered_map_node(
     if mouse_pos is None:
         return None
 
-    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, map_tiles)
+    tile_size = map_tiles[0].shape[0] if map_tiles else 0
+    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, tile_size)
     mouse_x, mouse_y = int(mouse_pos.x), int(mouse_pos.y)
 
     hovered_node = None
@@ -82,7 +83,8 @@ def draw_map_node_mouse_hover(
 
     if not map_tiles:
         return
-    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, map_tiles)
+    tile_size = map_tiles[0].shape[0] if map_tiles else 0
+    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, tile_size)
     cx, cy = map_coord_to_screen(hovered.coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
 
     set_scene_visible(ov, leaf_state, "map_node_mouse_hover", True)

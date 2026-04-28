@@ -57,7 +57,8 @@ def draw_map_composite(
         set_scene_visible(ov, leaf_state, "map_composite", False)
         return
 
-    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, map_tiles)
+    tile_size = map_tiles[0].shape[0] if map_tiles else 0
+    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, tile_size)
     map_shape = map_composite.shape
 
     # Determine last-node screen position

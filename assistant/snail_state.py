@@ -102,20 +102,6 @@ class SnailState:
             png_bytes=self.map_composite_pngbytes,
         )
 
-    # ── Coordinate helper utilities ────────────────────────────────────
-
-    def map_scene_geometry(
-        self,
-    ) -> tuple[int, int, int, int, int, int]:
-        """Return (origin_x, origin_y, min_x, min_y, tile_w, tile_h)."""
-        min_x = min(dx for dx, _ in self.map_offsets) if self.map_offsets else 0
-        min_y = min(dy for _, dy in self.map_offsets) if self.map_offsets else 0
-        origin_x = 1920 // 2 + 40 + min_x  # MAP_ANCHOR_X = 40
-        origin_y = (1080 * 2) // 2 + 140 + min_y  # MAP_ANCHOR_Y = 140
-        tile_w = self.map_tiles[0].shape[1] if self.map_tiles else 0
-        tile_h = self.map_tiles[0].shape[0] if self.map_tiles else 0
-        return origin_x, origin_y, min_x, min_y, tile_w, tile_h
-
     @staticmethod
     def map_coord_to_screen(
         coord: tuple[int, int],

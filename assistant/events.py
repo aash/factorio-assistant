@@ -114,3 +114,36 @@ SNAIL_SCREENSHOT_CENTER = "snail.screenshot.center"
 """User requests a centered square screenshot.
 Payload: size: int (default 100), counter: int
 """
+
+# ── PID events ─────────────────────────────────────────────────────────
+
+SNAIL_PID_TICK = "snail.pid.tick"
+"""Periodic tick to advance PID background tasks.
+Emitted each frame by the main loop (or by any other source).
+Payload: (none)
+"""
+
+SNAIL_PID_MOVE_REQUESTED = "snail.pid.move_requested"
+"""Request PID movement to a map coordinate.
+Payload: target_x: int, target_y: int
+"""
+
+SNAIL_PID_PARAMS_UPDATED = "snail.pid.params_updated"
+"""Update one or more PID configuration parameters.
+Payload: updates: dict
+"""
+
+SNAIL_PID_BENCHMARK_REQUESTED = "snail.pid.benchmark_requested"
+"""Start a PID benchmark run.
+Payload: radius: int, targets: int
+"""
+
+SNAIL_PID_TUNE_REQUESTED = "snail.pid.tune_requested"
+"""Start PID auto-tuning.
+Payload: iters: int, radius: int, targets: int, step: float
+"""
+
+SNAIL_PID_STOP_REQUESTED = "snail.pid.stop_requested"
+"""Stop a running PID background task.
+Payload: task: str ("tune" | "benchmark" | "all")
+"""

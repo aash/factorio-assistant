@@ -44,7 +44,8 @@ def draw_character_marker(
     if not map_tiles or not map_offsets:
         return
 
-    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, map_tiles)
+    tile_size = map_tiles[0].shape[0] if map_tiles else 0
+    origin_x, origin_y, min_x, min_y, tile_w, tile_h = map_scene_geometry(map_offsets, tile_size)
     cx, cy = map_coord_to_screen(character_marker_coord, origin_x, origin_y, min_x, min_y, tile_w, tile_h)
 
     set_scene_visible(ov, leaf_state, "map_character_marker", True)

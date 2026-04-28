@@ -50,15 +50,23 @@ def screen_to_map_coord(
 
 def map_scene_geometry(
     map_offsets: list[tuple[int, int]],
-    map_tiles: list,
+    tile_size: int,
 ) -> tuple[int, int, int, int, int, int]:
-    """Compute (origin_x, origin_y, min_x, min_y, tile_w, tile_h) from current state."""
+    """Compute (origin_x, origin_y, min_x, min_y, tile_w, tile_h).
+
+    Parameters
+    ----------
+    map_offsets : list[tuple[int, int]]
+        (dx, dy) offsets of each map tile.
+    tile_size : int
+        Width/height of a single map tile in pixels (square).
+    """
     min_x = min(dx for dx, _ in map_offsets) if map_offsets else 0
     min_y = min(dy for _, dy in map_offsets) if map_offsets else 0
     origin_x = 1920 // 2 + MAP_ANCHOR_X + min_x
     origin_y = (1080 * 2) // 2 + MAP_ANCHOR_Y + min_y
-    tile_w = map_tiles[0].shape[1] if map_tiles else 0
-    tile_h = map_tiles[0].shape[0] if map_tiles else 0
+    tile_w = tile_size
+    tile_h = tile_size
     return origin_x, origin_y, min_x, min_y, tile_w, tile_h
 
 
