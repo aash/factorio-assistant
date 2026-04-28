@@ -1,6 +1,18 @@
 # CHANGES
 
 Impact legend: 🔹 Low / 🔸 Med / 🔺 High
+## 🔺 e4748ef / 2026-04-29 / refactor: extract PidService, refactor pid_controller to take snail, simplify map_scene_geometry
+
+**Explanation**
+- Extracted PidService class encapsulating all PID state and snail interaction.
+- Added 6 PID events (tick, move_requested, params_updated, benchmark/tune/stop) on SnailEventBus.
+- Refactored pid_controller functions to take snail directly instead of ctx: ActionContext.
+- Rewired 6 PID action handlers to emit events; removed all PID globals and wrapper functions.
+- Main loop now emits SNAIL_PID_TICK each frame to advance background PID tasks.
+- Simplified map_scene_geometry to take tile_size: int instead of full map_tiles list.
+
+---
+
 
 ## 🔺 cd01939 / 2026-04-28 / refactor: introduce event bus architecture with leaf/snail separation
 
@@ -950,4 +962,3 @@ Impact legend: 🔹 Low / 🔸 Med / 🔺 High
 - Added recipes.
 - Scope: `main.py`, `recipes.yml`.
 
----
